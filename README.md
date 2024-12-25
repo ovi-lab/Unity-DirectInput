@@ -13,6 +13,7 @@ This package allows you to easily integrate both the input and ForceFeedback fea
 The package will create a virtual device inside Unity's Input System. This device can then be used like any other device inside the Input System, allowing for easy rebinding. ForceFeedback capabilites can be accessed via the DIManager class. The [DirectInputExplorer](../../tree/main/DirectInputExplorer~) is a windows forms application built in parallel with the C++ library to enable quick development by avoiding the need to reload Unity after every change. It also functions as an easy way to examine DirectInput devices.
 
 # Quick Start
+![image](https://github.com/user-attachments/assets/5398f792-d075-41fc-a292-1a7a585dbdc8)
 
 ### Installation
 
@@ -70,9 +71,11 @@ This plugin only works on Windows 8+ 64-bit.
 
 Latest verified Unity version: 2022.2.1f1
 
-# Notice
+# Notices
 
-Occasionally calls to EnumerateDevices will take orders of magnitude longer than usual to execute (up to 60 seconds), this is caused by a Windows bug attempting to load an absent hardware device. USB Audio DACs & Corsair keyboards are known the cause this issue, try disconnecting and reconnecting offending USB devices. For more information see [this](https://stackoverflow.com/questions/10967795/directinput8-enumdevices-sometimes-painfully-slow) StackOverflow post about the issue from 2012. See issue [#1](/../../issues/1) for more info.
+1) Occasionally calls to EnumerateDevices will take orders of magnitude longer than usual to execute (up to 60 seconds), this is caused by a Windows bug attempting to load an absent hardware device. USB Audio DACs & Corsair keyboards are known the cause this issue, try disconnecting and reconnecting offending USB devices. For more information see [this](https://stackoverflow.com/questions/10967795/directinput8-enumdevices-sometimes-painfully-slow) StackOverflow post about the issue from 2012. See issue [#1](/../../issues/1) for more info.
+
+2) THE UNITY INTEGRATION HAS NOT BEEN UPDATED TO THE LATEST VERSION IN THIS REPOSITORY.
 
 # Support
 
