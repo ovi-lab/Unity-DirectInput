@@ -30,32 +30,35 @@ Next, install this package:
 | Effect        | Supported |
 |---------------|-----------|
 | ConstantForce | ✅ |
-| CustomForce   | 🔲 |
+| CustomForce   | ℹ️ |
 | Damper        | ✅ |
 | Friction      | ✅ |
 | Inertia       | ✅ |
-| RampForce     | 🔲 |
-| SawtoothDown  | 🔲 |
-| SawtoothUp    | 🔲 |
-| Sine          | 🔲 |
+| RampForce     | ✅ |
+| SawtoothDown  | ✅ |
+| SawtoothUp    | ✅ |
+| Sine          | ✅ |
 | Spring        | ✅ |
-| Square        | 🔲 |
-| Triangle      | 🔲 |
+| Square        | ✅ |
+| Triangle      | ✅ |
 
-[comment]: <> (✅ 🔲)
+[comment]: <Done, needs work but is available, not done> (✅ ℹ️ 🔲)
 
 ## Compatible Devices
 
 | Peripheral                         | Test Status    |
 |------------------------------------|----------------|
+| [Fanatec CSL DD (Both PC & Comp mode + 8NM Kit)](https://fanatec.com/eu-en/csl-dd-8-nm) | ✅ Verified    |
 | [Fanatec CSL Elite](https://fanatec.com/eu-en/racing-wheels-wheel-bases/wheel-bases/csl-elite-wheel-base-officially-licensed-for-playstation) | ✅ Verified    |
 | [Fanatec CSW V2.0](https://fanatec.com/eu-en/racing-wheels-wheel-bases/wheel-bases/clubsport-wheel-base-v2-servo) | ✅ Verified    |
 | [Fanatec WRC Wheel Rim](https://fanatec.com/eu-en/steering-wheels/csl-elite-steering-wheel-wrc) | ✅ Verified    |
 | [Fanatec Formula V2 Wheel Rim](https://fanatec.com/eu-en/steering-wheels/clubsport-steering-wheel-formula-v2) & [APM](https://fanatec.com/eu-en/shifters-others/podium-advanced-paddle-module) | ✅ Verified    |
 | [Fanatec CSL LC Pedals](https://fanatec.com/eu-en/pedals/csl-elite-pedals) | ✅ Verified    |
+| [Fanatec ClubSport Pedals V1](https://www.youtube.com/watch?v=jw52Dq3SZaA) | ℹ️ No ABS Vibration    |
 | [Fanatec ClubSport Pedals V3](https://fanatec.com/eu-en/pedals/clubsport-pedals-v3) | ✅ Verified    |
 | [Fanatec ClubSport Shifter SQ V 1.5](https://fanatec.com/eu-en/shifters-others/clubsport-shifter-sq-v-1.5) | ✅ Verified    |
 | [Logitech G29 / G920](https://www.logitechg.com/en-gb/products/driving/driving-force-racing-wheel.html) | ✅ Verified    |
+| [Thrustmaster TX(?)](https://shop.thrustmaster.com/de_de/tx-racing-wheel-leather-edition-eu.html) | ✅ Verified    |
 | [PRO Racing Wheel](https://www.logitechg.com/en-gb/products/driving/pro-racing-wheel.html) | 🔲 Untested    |
 
 [comment]: <> (✅ 🔲)
