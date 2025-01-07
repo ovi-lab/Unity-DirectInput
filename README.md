@@ -41,6 +41,7 @@ Next, install (copy and paste) the Plugin folder of this repo into the Assets fo
 | Square        | ✅ |
 | Triangle      | ✅ |
 [comment]: <> (✅ ℹ️ 🔲)
+
 Note that everything is adjustable in the native DLL, And the Custom Force effect exists but has not been fully done.
 
 ## Compatible Devices
@@ -64,6 +65,7 @@ The community has tested and verified these devices do indeed work. Albeit not a
 | [Simagic Alpha-Mini](https://us.sim-motion.com/products/simagic-alpha-mini-wheel-base) | ✅ Verified    |
 | [Thrustmaster TX](https://eshop.thrustmaster.com/en_us/tx-racing-wheel-leather-edition.html) | ✅ Verified    |
 [comment]: <> (✅ 🔲)
+
 Note for pedals, only input readings were guaranteed to *likely* work fine.
 
 ## Environment
@@ -72,11 +74,8 @@ This plugin only works on Windows 8+ 64-bit.
 
 Latest verified Unity version: 2022.2.1f1
 
-# Notices
-
-1) Occasionally calls to EnumerateDevices will take orders of magnitude longer than usual to execute (up to 60 seconds), this is caused by a Windows bug attempting to load an absent hardware device. USB Audio DACs & Corsair keyboards are known the cause this issue, try disconnecting and reconnecting offending USB devices. For more information see [this](https://stackoverflow.com/questions/10967795/directinput8-enumdevices-sometimes-painfully-slow) StackOverflow post about the issue from 2012. See issue [#1](/../../issues/1) for more info.
-
-2) THE UNITY INTEGRATION HAS NOT BEEN UPDATED TO THE LATEST VERSION IN THIS REPOSITORY.
+# Notice
+Occasionally calls to EnumerateDevices will take orders of magnitude longer than usual to execute (up to 60 seconds), this is caused by a Windows bug attempting to load an absent hardware device. USB Audio DACs & Corsair keyboards are known the cause this issue, try disconnecting and reconnecting offending USB devices. For more information see [this](https://stackoverflow.com/questions/10967795/directinput8-enumdevices-sometimes-painfully-slow) StackOverflow post about the issue from 2012. See issue [#1](/../../issues/1) for more info.
 
 # Support
 
