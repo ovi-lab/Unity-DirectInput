@@ -21,9 +21,7 @@ This package requires use of Unity's new Input System, ensure [com.unity.inputsy
 
 `Window -> Package Manager => Input System`
 
-Next, install this package:
-
-`Package Manager => + => "Add package from git URL..." => ` `https://github.com/MrTimcakes/Unity-DirectInput.git` 
+Next, install (copy and paste) the Plugin folder of this repo into the Assets folder of your Unity project. You can copy and paste the whole content, and Unity will automatically exclude the unrelated contents as their folder names have "~" characters. Those unrelated folders have the source code of the native Direct Input FFB DLL that Unity uses. Open the Sample Scene there and play the scene to start working with this asset.
 
 
 ## Supported ForceFeedback Effects
@@ -42,10 +40,12 @@ Next, install this package:
 | Spring        | ✅ |
 | Square        | ✅ |
 | Triangle      | ✅ |
-
-[comment]: <Done, needs work but is available, not done> (✅ ℹ️ 🔲)
+[comment]: <> (✅ ℹ️ 🔲)
+Note that everything is adjustable in the native DLL, And the Custom Force effect exists but has not been fully done.
 
 ## Compatible Devices
+### Note that all the devices that use Direct Input (from the old Logitech G wheels to the advanced Simcube ones) should work
+The community has tested and verified these devices do indeed work. Albeit not all devices support all the FFB effects!
 
 | Peripheral                         | Test Status    |
 |------------------------------------|----------------|
@@ -59,12 +59,12 @@ Next, install this package:
 | [Fanatec ClubSport Pedals V3](https://fanatec.com/eu-en/pedals/clubsport-pedals-v3) | ✅ Verified    |
 | [Fanatec ClubSport Shifter SQ V 1.5](https://fanatec.com/eu-en/shifters-others/clubsport-shifter-sq-v-1.5) | ✅ Verified    |
 | [Logitech G29 / G920](https://www.logitechg.com/en-gb/products/driving/driving-force-racing-wheel.html) | ✅ Verified    |
+| [Moza R3](https://mozaracing.com/r3-racing-wheel-and-pedals) | ✅ Verified    |
+| [PRO Racing Wheel](https://www.logitechg.com/en-gb/products/driving/pro-racing-wheel.html) | ✅ Verified    |
 | [Simagic Alpha-Mini](https://us.sim-motion.com/products/simagic-alpha-mini-wheel-base) | ✅ Verified    |
 | [Thrustmaster TX](https://eshop.thrustmaster.com/en_us/tx-racing-wheel-leather-edition.html) | ✅ Verified    |
-| [PRO Racing Wheel](https://www.logitechg.com/en-gb/products/driving/pro-racing-wheel.html) | 🔲 Untested    |
-Note for pedals, only input readings were guaranteed to *likely* work fine.
 [comment]: <> (✅ 🔲)
-
+Note for pedals, only input readings were guaranteed to *likely* work fine.
 
 ## Environment
 

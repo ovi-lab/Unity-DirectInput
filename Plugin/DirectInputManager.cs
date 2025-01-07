@@ -10,7 +10,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Diagnostics;
 #if UNITY_STANDALONE_WIN
-  using UnityEngine;
+using UnityEngine;
 #endif
 
 namespace DirectInputManager
@@ -18,7 +18,7 @@ namespace DirectInputManager
     class Native
     {
 #if UNITY_STANDALONE_WIN
-    const string DLLFile = @"DirectInputForceFeedback.dll";
+        const string DLLFile = @"DirectInputForceFeedback.dll";
 #else
         const string DLLFile = @"..\..\..\..\..\Plugin\DLL\DirectInputForceFeedback.dll";
 #endif
@@ -52,10 +52,10 @@ namespace DirectInputManager
         //////////////////////////////////////////////////////////////
 
 #if UNITY_STANDALONE_WIN
-    const string DLLFile = @"DirectInputForceFeedback.dll";
-    private static uint ClampAgnostic(uint value, uint min, uint max) => (uint)Mathf.Clamp(value, min, max);
-    private static int ClampAgnostic(int value, int min, int max) => Mathf.Clamp(value, min, max);
-    private static void DebugLog(string message) => Debug.Log($"<color=#9416f9>[DirectInputManager]</color> <color=#ff0000>{message}</color>");
+        const string DLLFile = @"DirectInputForceFeedback.dll";
+        private static uint ClampAgnostic(uint value, uint min, uint max) => (uint)Mathf.Clamp(value, min, max);
+        private static int ClampAgnostic(int value, int min, int max) => Mathf.Clamp(value, min, max);
+        private static void DebugLog(string message) => UnityEngine.Debug.Log($"<color=#9416f9>[DirectInputManager]</color> <color=#ff0000>{message}</color>");
 #else
         const string DLLFile = @"..\..\..\..\..\Plugin\DLL\DirectInputForceFeedback.dll";
         private static uint ClampAgnostic(uint value, uint min, uint max) => Math.Clamp(value, min, max);
@@ -638,16 +638,27 @@ namespace DirectInputManager
             return true;
         }
 
-        public static bool UpdatePeriodicSimple(string guidInstance, FFBEffects effectType, int magnitude)
+        public static bool UpdatePeriodicSimple(string guidInstance, FFBEffects effectType, int magnitude, uint period = 30000, int rampStart = 0, int rampEnd = 0)
         {
             DICondition[] conditions = new DICondition[1];
             conditions[0] = new DICondition();
             conditions[0].deadband = 0;
             conditions[0].offset = 0;
-            conditions[0].negativeCoefficient = ClampAgnostic(magnitude, -10000, 10000);
-            conditions[0].positiveCoefficient = ClampAgnostic(magnitude, -10000, 10000);
+            if (effectType != FFBEffects.RampForce)
+            {
+                conditions[0].negativeCoefficient = ClampAgnostic(magnitude, -10000, 10000);
+                conditions[0].positiveCoefficient = ClampAgnostic(magnitude, -10000, 10000);
+
+                conditions[0].positiveSaturation = period;
+            }
+            else
+            {
+                conditions[0].positiveCoefficient = ClampAgnostic(rampStart, -10000, 10000);
+                conditions[0].negativeCoefficient = ClampAgnostic(rampEnd, -10000, 10000);
+
+                conditions[0].positiveSaturation = 0;
+            }
             conditions[0].negativeSaturation = 0;
-            conditions[0].positiveSaturation = 0;
 
             // Try updating first
             int hresult = Native.UpdateFFBEffect(guidInstance, effectType, conditions);
@@ -679,11 +690,11 @@ namespace DirectInputManager
             return true;
         }
 
-        private static bool UpdateCustomForceSimple(string guidInstance, int[] forceData, uint samplePeriod, int offset = 0, uint deadband = 0)
+        public static bool UpdateCustomForceSimple(string guidInstance, int[] forceData, uint samplePeriod, int offset = 0, uint deadband = 0)
         {
             if (forceData == null)
             {
-                Debug.WriteLine("UpdateCustomForceSimple: Invalid input parameters");
+                System.Diagnostics.Debug.WriteLine("UpdateCustomForceSimple: Invalid input parameters");
                 return false;
             }
 
@@ -697,8 +708,8 @@ namespace DirectInputManager
                 {
                     positiveCoefficient = forceData[i],   // Force value for this sample
                     negativeCoefficient = i == 0 ? (int)samplePeriod : 0, // Sample period in first condition only
-                    offset = offset,                      
-                    deadband = deadband,                  
+                    offset = offset,
+                    deadband = deadband,
                     positiveSaturation = 10000,           // Full range
                     negativeSaturation = 10000            // Full range
                 };
@@ -920,7 +931,7 @@ namespace DirectInputManager
         /// <returns>
         /// A boolean representing if the Effect updated successfully
         /// </returns>
-        public static bool UpdatePeriodicSimple(DeviceInfo device, FFBEffects effectType, int Magnitude) => UpdatePeriodicSimple(device.guidInstance, effectType, Magnitude);
+        public static bool UpdatePeriodicSimple(DeviceInfo device, FFBEffects effectType, int Magnitude, uint period = 30000, int rampStart = 0, int rampEnd = 0) => UpdatePeriodicSimple(device.guidInstance, effectType, Magnitude, period,  rampStart, rampEnd);
 
         public static bool UpdateCustomForceEffect(DeviceInfo device, int[] forceData, uint samplePeriod) => UpdateCustomForceSimple(device.guidInstance, forceData, samplePeriod);
 

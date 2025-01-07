@@ -535,7 +535,8 @@ HRESULT UpdateFFBEffect(LPCSTR guidInstance, Effects::Type effectType, DICONDITI
 			if (!pe) return E_POINTER;
 			pe->dwMagnitude = conditions[idx].lPositiveCoefficient;
 			pe->lOffset = conditions[idx].lOffset;
-			// Maintain existing phase and period values
+			pe->dwPeriod = conditions[idx].dwPositiveSaturation;
+			// Maintain existing phase values
 			break;
 		}
 		case Effects::Type::RampForce: {
