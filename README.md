@@ -16,7 +16,7 @@ This package allows you to easily integrate both the input and ForceFeedback fea
 The package will create a virtual device inside Unity's Input System. This device can then be used like any other device inside the Input System, allowing for easy rebinding. ForceFeedback capabilites can be accessed via the DIManager class. The [DirectInputExplorer](../../tree/main/DirectInputExplorer~) is a Windows forms application built in parallel with the C++ library to enable quick development by avoiding the need to reload Unity after every change. It also functions as an easy way to examine DirectInput devices.
 
 # Quick Start
-![image](https://github.com/user-attachments/assets/5398f792-d075-41fc-a292-1a7a585dbdc8)
+![image](https://github.com/user-attachments/assets/12feffae-5311-4603-a983-fee9ed45e372)
 
 ### Installation
 
