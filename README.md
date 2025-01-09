@@ -1,7 +1,8 @@
 # Unity DirectInput Force Feedback W/ DInput Manager for Unity!
 ## Now you can manage your DInput devices natively in addition to FFB Support!
-### Fully integrated with Unity's Input System, Supports _any_ Direct Input Device
+![image](https://github.com/user-attachments/assets/0a18ef03-51e1-4120-af1a-abf067a99e5f)
 
+### Fully integrated with Unity's Input System, Supports _any_ Direct Input Device
 [![Made with Unity](https://img.shields.io/badge/Made%20with-Unity-57b9d3.svg?style=for-the-badge&logo=unity)](https://unity3d.com)
 ![GitHub issues open](https://img.shields.io/github/issues/MrTimcakes/Unity-DirectInput?style=for-the-badge)
 ![GitHub issues close](https://img.shields.io/github/issues-closed/MrTimcakes/Unity-DirectInput?style=for-the-badge)
