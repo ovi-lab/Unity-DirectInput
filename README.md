@@ -44,6 +44,7 @@ Next, install (copy and paste) the Plugin folder of this repo into the Assets fo
 | Rear Collision   	| ✅ |
 | Left Collision  	| ✅ |
 | RightCollision  	| ✅ |
+
 [comment]: <> (✅ ℹ️ 🔲)
 Note that everything is adjustable in the native DLL, And the Custom Force effect exists but has not been fully done.
 
@@ -67,6 +68,7 @@ The community has tested and verified these devices do indeed work. Albeit not a
 | [PRO Racing Wheel](https://www.logitechg.com/en-gb/products/driving/pro-racing-wheel.html) | ✅ Verified    |
 | [Simagic Alpha-Mini](https://us.sim-motion.com/products/simagic-alpha-mini-wheel-base) | ✅ Verified    |
 | [Thrustmaster TX](https://eshop.thrustmaster.com/en_us/tx-racing-wheel-leather-edition.html) | ✅ Verified    |
+
 [comment]: <> (✅ 🔲)
 Note for pedals, only input readings were guaranteed to *likely* work fine.
 
