@@ -4,10 +4,10 @@
 ![image](https://github.com/user-attachments/assets/b9ca5989-623a-48bb-9f98-d0ff99588fbd)
 ### Fully integrated with Unity's Input System, Supports _any_ Direct Input Device
 [![Made with Unity](https://img.shields.io/badge/Made%20with-Unity-57b9d3.svg?style=for-the-badge&logo=unity)](https://unity3d.com)
-![GitHub issues open](https://img.shields.io/github/issues/MrTimcakes/Unity-DirectInput?style=for-the-badge)
-![GitHub issues close](https://img.shields.io/github/issues-closed/MrTimcakes/Unity-DirectInput?style=for-the-badge)
-![GitHub package.json version](https://img.shields.io/github/package-json/v/MrTimcakes/Unity-DirectInput?style=for-the-badge)
-![GitHub](https://img.shields.io/github/license/MrTimcakes/Unity-DirectInput?style=for-the-badge)
+![GitHub issues open](https://img.shields.io/github/issues/ImDanOush/Unity-DirectInput?style=for-the-badge)
+![GitHub issues close](https://img.shields.io/github/issues-closed/ImDanOush/Unity-DirectInput?style=for-the-badge)
+![GitHub package.json version](https://img.shields.io/github/package-json/v/ImDanOush/Unity-DirectInput?style=for-the-badge)
+![GitHub](https://img.shields.io/github/license/ImDanOush/Unity-DirectInput?style=for-the-badge)
 
 ![Unity-DirectInput Banner](https://github.com/MrTimcakes/Unity-DirectInput/blob/assets/UnityDirectInputBanner.png )
 
