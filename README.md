@@ -53,7 +53,6 @@ Next, Go to the [Releases section of this GitHub repository](https://github.com/
 | RightCollision  	| ✅ |
 
 [comment]: <> (✅ ℹ️ 🔲)
-Note that everything is adjustable in the native DLL, And the Custom Force effect exists but has not been fully done.
 Note that everything is adjustable in the native DLL, The Custom Force effect exists but has not been fully done, And the collision effects are only in the Unity project.
 
 ## Compatible Devices
