@@ -16,6 +16,7 @@ This package allows you to easily integrate both the input and ForceFeedback fea
 The package will create a virtual device inside Unity's Input System. This device can then be used like any other device inside the Input System, allowing for easy rebinding. ForceFeedback capabilities can be accessed via the DIManager class. The [DirectInputExplorer](../../tree/main/DirectInputExplorer~) is a Windows forms application built in parallel with the C++ library to enable quick development by avoiding the need to reload Unity after every change. It also functions as an easy way to examine DirectInput devices.
 
 # Quick Start
+## [Windows Unity](https://github.com/imDanoush/Unity-DirectInput/releases/tag/v1.0_Demo)
 ![image](https://github.com/user-attachments/assets/12feffae-5311-4603-a983-fee9ed45e372)
 
 ### Installation
@@ -49,7 +50,7 @@ Next, Go to the [Releases section of this GitHub repository](https://github.com/
 Note that everything is adjustable in the native DLL, The Custom Force effect exists but has not been fully done, And the collision effects are only in the Unity project.
 
 ## Compatible Devices
-### Note that all the devices that use Direct Input (from the old Logitech G wheels to the advanced Simcube ones) should work
+### Note that all the devices that use Direct Input (from the old Logitech G wheels to the advanced Simucube ones) should work
 The community has tested and verified these devices do indeed work. Albeit not all devices support all the FFB effects!
 
 | Peripheral                         | Test Status    |
