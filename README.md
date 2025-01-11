@@ -24,7 +24,12 @@ This package requires the use of Unity's new Input System, to ensure [com.unity.
 
 `Window -> Package Manager => Input System`
 
+<<<<<<< Updated upstream
 Next, install (copy and paste) this repo's Plugin folder into your Unity project's Assets folder. You can copy and paste the whole content, and Unity will automatically exclude the unrelated contents as their folder names have "~" characters. Those unrelated folders have the source code of the native Direct Input FFB DLL that Unity uses. Open the Sample Scene and play the scene to start working with this asset. The sample scene has one Direct Input with Force Feed Back support and an example script to read the input values.
+=======
+Next, Go to the [Releases section of this GitHub repository](https://github.com/imDanoush/Unity-DirectInput/releases) to directly download and install the plugin with all the samples and examples, Or copy and paste the Plugin folder of this repository into the Assets folder of your Unity project and import its own Unitypackage example demo file. If Unity is opened, restart it to import the DLL file properly. The folders that end with the `~` character are automatically skipped by Unity and are used for writing the DLL file as well as the ForceFeedBack Windows App software (which you can find in `./DirectInputExplorer~\DirectInputExplorer\bin\Debug\net5.0-windows`).
+
+>>>>>>> Stashed changes
 
 ## Supported ForceFeedback Effects
 
@@ -49,6 +54,7 @@ Next, install (copy and paste) this repo's Plugin folder into your Unity project
 
 [comment]: <> (✅ ℹ️ 🔲)
 Note that everything is adjustable in the native DLL, And the Custom Force effect exists but has not been fully done.
+Note that everything is adjustable in the native DLL, The Custom Force effect exists but has not been fully done, And the collision effects are only in the Unity project.
 
 ## Compatible Devices
 ### Note that all the devices that use Direct Input (from the old Logitech G wheels to the advanced Simcube ones) should work
@@ -91,3 +97,4 @@ If you have problems, please [raise an issue](https://github.com/MrTimcakes/Unit
 # License
 
 This project is free Open-Source software released under the LGPL-3.0 License. Further information can be found under the terms specified in the [license](/../../blob/main/LICENSE).
+<a href="https://www.flaticon.com/free-icons/drive" title="drive icons">Drive icons created by Freepik - Flaticon</a>

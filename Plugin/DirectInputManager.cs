@@ -47,6 +47,13 @@ namespace DirectInputManager
     }
     public class DIManager
     {
+        // Define all callback delegates at class level with proper attributes
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate void DeviceChangeCallback(DBTEvents DBTEvent);
+
+        // Static delegate instances to prevent garbage collection
+        private static DeviceChangeCallback s_deviceChangeCallback;
+
         //////////////////////////////////////////////////////////////
         // Cross Platform "Macros" - Allows lib to work in Visual Studio & Unity
         //////////////////////////////////////////////////////////////
@@ -92,9 +99,18 @@ namespace DirectInputManager
         public static bool Initialize()
         {
             if (_isInitialized) { return _isInitialized; }
-            if (Native.StartDirectInput() != 0) { return _isInitialized = false; }
-            Native.SetDeviceChangeCallback(OnDeviceChange);
-            return _isInitialized = true;
+            try
+            {
+                if (Native.StartDirectInput() != 0) { return _isInitialized = false; }
+                s_deviceChangeCallback = OnDeviceChange;
+                Native.SetDeviceChangeCallback(OnDeviceChange);
+                return _isInitialized = true;
+            }
+            catch (Exception ex)
+            {
+                DebugLog($"Failed to initialize DirectInput: {ex.Message}");
+                return _isInitialized = false;
+            }
         }
 
         /// <summary>
@@ -438,6 +454,9 @@ namespace DirectInputManager
         /// Called from the DLL when a windows WM_DEVICECHANGE event is captured
         /// This function invokes the necessary events
         /// </summary>
+#if UNITY_STANDALONE_WIN
+        [AOT.MonoPInvokeCallback(typeof(DeviceChangeCallback))]
+#endif
         private static void OnDeviceChange(DBTEvents DBTEvent)
         {
             //DebugLog($"DeviceChange {DBTEvent.ToString()}");

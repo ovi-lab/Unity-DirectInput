@@ -13,7 +13,7 @@ std::map   < DeviceGUID, std::vector<DIDEVICEOBJECTINSTANCE> >          _DeviceF
 std::map   < DeviceGUID, std::map<Effects::Type, DIEFFECT> >            _DeviceFFBEffectConfig;   // Effect Configuration
 std::map   < DeviceGUID, std::map<Effects::Type, LPDIRECTINPUTEFFECT> > _DeviceFFBEffectControl;  // Handle to Start/Stop Effect
 
-DeviceChangeCallback _DeviceChangeCallback; // External function to invoke on device change
+DeviceChangeCallback g_deviceCallback = nullptr;
 
 std::vector<std::wstring> DEBUGDATA; // Used for Debugging during development
 
@@ -595,7 +595,7 @@ HRESULT StopAllFFBEffects(LPCSTR guidInstance) {
 }
 
 void SetDeviceChangeCallback(DeviceChangeCallback CB) {
-	_DeviceChangeCallback = CB;
+	g_deviceCallback = CB;
 }
 
 // Generate SAFEARRAY of DEBUG data
@@ -702,33 +702,17 @@ BOOL CALLBACK _EnumFFBAxisCallback(const DIDEVICEOBJECTINSTANCE* ObjectInst, LPV
 }
 
 LRESULT _WindowsHookCallback(int code, WPARAM wParam, LPARAM lParam) {
-	if (code < 0) return CallNextHookEx(NULL, code, wParam, lParam); // invalid code skip
+	if (code < 0) return CallNextHookEx(NULL, code, wParam, lParam);
 
-	// check if device was added/removed
 	PCWPSTRUCT pMsg = PCWPSTRUCT(lParam);
 	if (pMsg->message == WM_DEVICECHANGE) {
-		if (_DeviceChangeCallback) { _DeviceChangeCallback((int)pMsg->wParam); } // If callback assigned, invoke it
-		//switch (pMsg->wParam) {
-		//  case DBT_DEVNODES_CHANGED:
-		//    DEBUGDATA.push_back(L"Changed!");
-		//    // TODO: Invoke Callback
-		//    //if (_DeviceChangeCallback) { _DeviceChangeCallback(1); }
-		//    break;
-		//  case DBT_DEVICEARRIVAL:
-		//    DEBUGDATA.push_back(L"Arrival!");
-		//    // TODO: Invoke Callback
-		//    break;
-		//  case DBT_DEVICEREMOVECOMPLETE:
-		//    DEBUGDATA.push_back(L"Remove!");
-		//    // TODO: Invoke Callback
-		//    break;
-		//  default:
-		//    DEBUGDATA.push_back(L"Other!");
-		//    break;
-		//}
+		if (g_deviceCallback) {
+			g_deviceCallback(static_cast<DBTEvents>(pMsg->wParam));
+		}
 	}
-	return CallNextHookEx(NULL, code, wParam, lParam); // Continue to next hook
+	return CallNextHookEx(NULL, code, wParam, lParam);
 }
+
 
 //////////////////////////////////////////////////////////////
 // Helper Functions

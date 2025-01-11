@@ -95,12 +95,19 @@ extern "C" { // Everything to be made available by the DLL
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              DestroyFFBEffect(LPCSTR guidInstance, Effects::Type effectType);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              UpdateFFBEffect(LPCSTR guidInstance, Effects::Type effectType, DICONDITION* conditions);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              StopAllFFBEffects(LPCSTR guidInstance);
-
-  typedef void(__stdcall* DeviceChangeCallback)(int);
-  DIRECTINPUTFORCEFEEDBACK_API void                 SetDeviceChangeCallback(DeviceChangeCallback CB);
-
-
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** DebugData);
+  extern "C" { // Everything to be made available by the DLL
+      enum DBTEvents {
+          DBTDEVNODESCHANGED = 0x0007,
+          DBTDEVICEARRIVAL = 0x8000,
+          DBTDEVICEREMOVECOMPLETE = 0x8004
+      };
+      typedef void(__stdcall* DeviceChangeCallback)(DBTEvents state);
+
+      extern DeviceChangeCallback g_deviceCallback;
+
+      DIRECTINPUTFORCEFEEDBACK_API void SetDeviceChangeCallback(DeviceChangeCallback CB);
+  }
 }
 
 
