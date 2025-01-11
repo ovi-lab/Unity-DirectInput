@@ -1,7 +1,7 @@
 # Unity DirectInput Force Feedback W/ DInput Manager for Unity!
 ## Now you can manage your DInput devices natively in addition to FFB Support!
 ![image](https://github.com/user-attachments/assets/fcd321cb-7b7c-437a-b033-d80a78576f99)
-
+![image](https://github.com/user-attachments/assets/b9ca5989-623a-48bb-9f98-d0ff99588fbd)
 ### Fully integrated with Unity's Input System, Supports _any_ Direct Input Device
 [![Made with Unity](https://img.shields.io/badge/Made%20with-Unity-57b9d3.svg?style=for-the-badge&logo=unity)](https://unity3d.com)
 ![GitHub issues open](https://img.shields.io/github/issues/MrTimcakes/Unity-DirectInput?style=for-the-badge)
@@ -13,7 +13,7 @@
 
 This package allows you to easily integrate both the input and ForceFeedback features of DirectX DirectInput from within Unity. This allows you to interface with HID peripherals with ForceFeedback capabilities. This can be used to build vivid simulated experiences.
 
-The package will create a virtual device inside Unity's Input System. This device can then be used like any other device inside the Input System, allowing for easy rebinding. ForceFeedback capabilites can be accessed via the DIManager class. The [DirectInputExplorer](../../tree/main/DirectInputExplorer~) is a Windows forms application built in parallel with the C++ library to enable quick development by avoiding the need to reload Unity after every change. It also functions as an easy way to examine DirectInput devices.
+The package will create a virtual device inside Unity's Input System. This device can then be used like any other device inside the Input System, allowing for easy rebinding. ForceFeedback capabilities can be accessed via the DIManager class. The [DirectInputExplorer](../../tree/main/DirectInputExplorer~) is a Windows forms application built in parallel with the C++ library to enable quick development by avoiding the need to reload Unity after every change. It also functions as an easy way to examine DirectInput devices.
 
 # Quick Start
 ![image](https://github.com/user-attachments/assets/12feffae-5311-4603-a983-fee9ed45e372)
@@ -21,15 +21,8 @@ The package will create a virtual device inside Unity's Input System. This devic
 ### Installation
 
 This package requires the use of Unity's new Input System, to ensure [com.unity.inputsystem](https://docs.unity3d.com/Packages/com.unity.inputsystem@1.0/manual/QuickStartGuide.html) is installed in the project. Install it via the package manager via: 
-
 `Window -> Package Manager => Input System`
-
-<<<<<<< Updated upstream
-Next, install (copy and paste) this repo's Plugin folder into your Unity project's Assets folder. You can copy and paste the whole content, and Unity will automatically exclude the unrelated contents as their folder names have "~" characters. Those unrelated folders have the source code of the native Direct Input FFB DLL that Unity uses. Open the Sample Scene and play the scene to start working with this asset. The sample scene has one Direct Input with Force Feed Back support and an example script to read the input values.
-=======
 Next, Go to the [Releases section of this GitHub repository](https://github.com/imDanoush/Unity-DirectInput/releases) to directly download and install the plugin with all the samples and examples, Or copy and paste the Plugin folder of this repository into the Assets folder of your Unity project and import its own Unitypackage example demo file. If Unity is opened, restart it to import the DLL file properly. The folders that end with the `~` character are automatically skipped by Unity and are used for writing the DLL file as well as the ForceFeedBack Windows App software (which you can find in `./DirectInputExplorer~\DirectInputExplorer\bin\Debug\net5.0-windows`).
-
->>>>>>> Stashed changes
 
 ## Supported ForceFeedback Effects
 
