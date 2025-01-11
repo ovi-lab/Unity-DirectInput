@@ -10,13 +10,12 @@
 ![GitHub](https://img.shields.io/github/license/ImDanOush/Unity-DirectInput?style=for-the-badge)
 
 ![Unity-DirectInput Banner](https://github.com/MrTimcakes/Unity-DirectInput/blob/assets/UnityDirectInputBanner.png )
-
+## [Try the Unity Windows build Demo here!](https://github.com/imDanoush/Unity-DirectInput/releases/tag/v1.0_Demo)
 This package allows you to easily integrate both the input and ForceFeedback features of DirectX DirectInput from within Unity. This allows you to interface with HID peripherals with ForceFeedback capabilities. This can be used to build vivid simulated experiences.
 
 The package will create a virtual device inside Unity's Input System. This device can then be used like any other device inside the Input System, allowing for easy rebinding. ForceFeedback capabilities can be accessed via the DIManager class. The [DirectInputExplorer](../../tree/main/DirectInputExplorer~) is a Windows forms application built in parallel with the C++ library to enable quick development by avoiding the need to reload Unity after every change. It also functions as an easy way to examine DirectInput devices.
 
 # Quick Start
-## [Windows Unity](https://github.com/imDanoush/Unity-DirectInput/releases/tag/v1.0_Demo)
 ![image](https://github.com/user-attachments/assets/12feffae-5311-4603-a983-fee9ed45e372)
 
 ### Installation
