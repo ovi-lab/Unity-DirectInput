@@ -84,9 +84,10 @@ Occasionally calls to EnumerateDevices will take orders of magnitude longer than
 
 # Support
 
-If you have problems, please [raise an issue](https://github.com/MrTimcakes/Unity-DirectInput/issues/new) on GitHub.
+If you have problems, please [raise an issue](https://github.com/MrTimcakes/Unity-DirectInput/issues/new) on GitHub. The original code is by Mr.TimCakes.
 
 # License
 
 This project is free Open-Source software released under the LGPL-3.0 License. Further information can be found under the terms specified in the [license](/../../blob/main/LICENSE).
+
 <a href="https://www.flaticon.com/free-icons/drive" title="drive icons">Drive icons created by Freepik - Flaticon</a>
