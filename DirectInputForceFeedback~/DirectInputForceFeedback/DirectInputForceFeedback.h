@@ -87,10 +87,14 @@ extern "C" { // Everything to be made available by the DLL
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              GetDeviceState(LPCSTR guidInstance, /*[out]*/ FlatJoyState2& deviceState);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              GetDeviceStateRaw(LPCSTR guidInstance, /*[out]*/ DIJOYSTATE2& deviceState);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              GetDeviceCapabilities(LPCSTR guidInstance, /*[out]*/ DIDEVCAPS& deviceCapabilitiesOut);
-  DIRECTINPUTFORCEFEEDBACK_API HRESULT              GetActiveDevices(/*[out]*/ SAFEARRAY** activeGUIDs);
+  
+  DIRECTINPUTFORCEFEEDBACK_API HRESULT              GetActiveDevices(int* count, const char*** outStrings);
+  DIRECTINPUTFORCEFEEDBACK_API HRESULT              EnumerateFFBEffects(LPCSTR guidInstance, int* count, const char*** outStrings);
+  DIRECTINPUTFORCEFEEDBACK_API HRESULT              EnumerateFFBAxes(LPCSTR guidInstance, int* count, const char*** outStrings);
+  
+  DIRECTINPUTFORCEFEEDBACK_API void FreeStringArray(const char** strings, int count);
+
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              SetAutocenter(LPCSTR guidInstance, bool AutocenterState);
-  DIRECTINPUTFORCEFEEDBACK_API HRESULT              EnumerateFFBEffects(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** FFBEffects);
-  DIRECTINPUTFORCEFEEDBACK_API HRESULT              EnumerateFFBAxes(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** FFBAxis);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              CreateFFBEffect(LPCSTR guidInstance, Effects::Type effectType);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              DestroyFFBEffect(LPCSTR guidInstance, Effects::Type effectType);
   DIRECTINPUTFORCEFEEDBACK_API HRESULT              UpdateFFBEffect(LPCSTR guidInstance, Effects::Type effectType, DICONDITION* conditions);

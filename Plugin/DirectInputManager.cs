@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Diagnostics;
+using System.Text;
 #if UNITY_STANDALONE_WIN
 using UnityEngine;
 #endif
@@ -31,9 +32,10 @@ namespace DirectInputManager
         [DllImport(DLLFile)] public static extern int GetDeviceState(string guidInstance, out FlatJoyState2 DeviceState);
         [DllImport(DLLFile)] public static extern int GetDeviceStateRaw(string guidInstance, out DIJOYSTATE2 DeviceState);
         [DllImport(DLLFile)] public static extern int GetDeviceCapabilities(string guidInstance, out DIDEVCAPS DeviceCapabilitiesOut);
-        [DllImport(DLLFile)] public static extern int GetActiveDevices([MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_BSTR)] out string[] ActiveGUIDs);
-        [DllImport(DLLFile)] public static extern int EnumerateFFBEffects(string guidInstance, [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_BSTR)] out string[] SupportedFFBEffects);
-        [DllImport(DLLFile)] public static extern int EnumerateFFBAxis(string guidInstance, [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_BSTR)] out string[] SupportedFFBAxis);
+        [DllImport(DLLFile)] public static extern int GetActiveDevices(out int count, out IntPtr strings);
+        [DllImport(DLLFile)] public static extern int EnumerateFFBEffects(string guidInstance, out int count, out IntPtr strings);
+        [DllImport(DLLFile)] public static extern int EnumerateFFBAxes(string guidInstance, out int count, out IntPtr strings);
+        [DllImport(DLLFile)] public static extern void FreeStringArray(IntPtr strings, int count);
         [DllImport(DLLFile)] public static extern int CreateFFBEffect(string guidInstance, FFBEffects effectType);
         [DllImport(DLLFile)] public static extern int DestroyFFBEffect(string guidInstance, FFBEffects effectType);
         [DllImport(DLLFile)] public static extern int UpdateFFBEffect(string guidInstance, FFBEffects effectType, DICondition[] conditions);
@@ -216,22 +218,71 @@ namespace DirectInputManager
             return DeviceState;
         }
 
-        /// <summary>
-        /// Lists all attached device GUIDs
-        /// </summary>
-        /// <returns>
-        /// string[] of attached GUIDs
-        /// </returns>
         public static string[] GetActiveDevices()
         {
-            string[] ActiveGUIDs = null;
-            int hresult = Native.GetActiveDevices(out ActiveGUIDs);
-            //if (hresult != 0) { Debug.LogError($"[DirectInputManager] GetActiveDevices Failed: 0x{hresult.ToString("x")} {WinErrors.GetSystemMessage(hresult)}"); /*return false;*/ }
-            if (hresult != 0) { DebugLog($"GetActiveDevices Failed: 0x{hresult.ToString("x")} {WinErrors.GetSystemMessage(hresult)}"); /*return false;*/ }
+            int count;
+            IntPtr stringsPtr;
+            int hr = Native.GetActiveDevices(out count, out stringsPtr);
 
-            if (ActiveGUIDs.Length != _activeDevices.Count) { DebugLog($"Active Device mismatch! DLL:{ActiveGUIDs.Length}, DIManager:{_activeDevices.Count}"); }
+            if (FAILED(hr) || count == 0 || stringsPtr == IntPtr.Zero)
+            {
+                DebugLog($"GetActiveDevices Failed: 0x{hr.ToString("x")} {WinErrors.GetSystemMessage(hr)}");
+                return Array.Empty<string>();
+            }
 
-            return ActiveGUIDs;
+            try
+            {
+                string[] result = ReadStringArray(stringsPtr, count);
+                if (result.Length != _activeDevices.Count)
+                {
+                    DebugLog($"Active Device mismatch! DLL:{result.Length}, DIManager:{_activeDevices.Count}");
+                }
+                return result;
+            }
+            finally
+            {
+                Native.FreeStringArray(stringsPtr, count);
+            }
+        }
+
+        public static string[] GetDeviceFFBCapabilities(string guidInstance)
+        {
+            int count;
+            IntPtr stringsPtr;
+            int hr = Native.EnumerateFFBEffects(guidInstance, out count, out stringsPtr);
+
+            if (FAILED(hr) || count == 0 || stringsPtr == IntPtr.Zero)
+            {
+                DebugLog($"GetDeviceFFBCapabilities Failed: 0x{hr.ToString("x")} {WinErrors.GetSystemMessage(hr)}");
+                return Array.Empty<string>();
+            }
+
+            try
+            {
+                return ReadStringArray(stringsPtr, count);
+            }
+            finally
+            {
+                Native.FreeStringArray(stringsPtr, count);
+            }
+        }
+
+        // Add this helper method to the DIManager class
+        private static string[] ReadStringArray(IntPtr stringsPtr, int count)
+        {
+            string[] result = new string[count];
+            for (int i = 0; i < count; ++i)
+            {
+                IntPtr currentPtr = Marshal.ReadIntPtr(stringsPtr, i * IntPtr.Size);
+                result[i] = DirectInputManager.WinErrors.PtrToStringUTF8(currentPtr);
+            }
+            return result;
+        }
+
+        // Helper method to check HRESULT
+        private static bool FAILED(int hr)
+        {
+            return hr < 0;
         }
 
         /// <summary>
@@ -298,20 +349,6 @@ namespace DirectInputManager
             int hresult = Native.DestroyFFBEffect(guidInstance, effectType);
             if (hresult != 0) { DebugLog($"DestroyFFBEffect Failed: 0x{hresult.ToString("x")} {WinErrors.GetSystemMessage(hresult)}"); return false; }
             return true;
-        }
-
-        /// <summary>
-        /// Fetches supported FFB Effects by specified Device<br/>
-        /// </summary>
-        /// <returns>
-        /// string[] of effect names supported
-        /// </returns>
-        public static string[] GetDeviceFFBCapabilities(string guidInstance)
-        {
-            string[] SupportedFFBEffects = null;
-            int hresult = Native.EnumerateFFBEffects(guidInstance, out SupportedFFBEffects);
-            if (hresult != 0) { DebugLog($"GetDeviceFFBCapabilities Failed: 0x{hresult.ToString("x")} {WinErrors.GetSystemMessage(hresult)}"); /*return false;*/ }
-            return SupportedFFBEffects;
         }
 
         /// <summary>
@@ -950,7 +987,7 @@ namespace DirectInputManager
         /// <returns>
         /// A boolean representing if the Effect updated successfully
         /// </returns>
-        public static bool UpdatePeriodicSimple(DeviceInfo device, FFBEffects effectType, int Magnitude, uint period = 30000, int rampStart = 0, int rampEnd = 0) => UpdatePeriodicSimple(device.guidInstance, effectType, Magnitude, period,  rampStart, rampEnd);
+        public static bool UpdatePeriodicSimple(DeviceInfo device, FFBEffects effectType, int Magnitude, uint period = 30000, int rampStart = 0, int rampEnd = 0) => UpdatePeriodicSimple(device.guidInstance, effectType, Magnitude, period, rampStart, rampEnd);
 
         public static bool UpdateCustomForceEffect(DeviceInfo device, int[] forceData, uint samplePeriod) => UpdateCustomForceSimple(device.guidInstance, forceData, samplePeriod);
 
@@ -1013,7 +1050,7 @@ namespace DirectInputManager
                     return "Unable to get error code string from System - Error " + le.ToString();
                 }
 
-                string sRet = Marshal.PtrToStringAnsi(lpMsgBuf);
+                string sRet = PtrToStringUTF8(lpMsgBuf);
 
                 // Free the buffer.
                 lpMsgBuf = LocalFree(lpMsgBuf);
@@ -1023,6 +1060,16 @@ namespace DirectInputManager
             {
                 return "Unable to get error code string from System -> " + e.ToString();
             }
+        }
+
+        public static string PtrToStringUTF8(IntPtr ptr) //by Risto-Paasivirta
+        {
+            int len = 0;
+            while (Marshal.ReadByte(ptr, len) != 0) ++len;
+            if (len == 0) return "";
+            byte[] array = new byte[len];
+            Marshal.Copy(ptr, array, 0, len);
+            return Encoding.UTF8.GetString(array);
         }
     }
 

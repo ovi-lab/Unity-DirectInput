@@ -373,6 +373,9 @@ namespace DirectInputExplorer
                 DIManager.UpdatePeriodicSimple(
                     activeDevice,
                     effectType,
+                    magnitude,
+                    30000,
+                    -magnitude,
                     magnitude
                 );
             }

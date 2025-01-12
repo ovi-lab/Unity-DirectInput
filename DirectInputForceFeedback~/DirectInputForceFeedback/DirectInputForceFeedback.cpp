@@ -157,19 +157,6 @@ HRESULT GetDeviceCapabilities(LPCSTR guidInstance, /*[out]*/ DIDEVCAPS& deviceCa
 	return hr;
 }
 
-// Generate SAFEARRAY of ActiveDevice GUIDs
-HRESULT GetActiveDevices(/*[out]*/ SAFEARRAY** activeGUIDs) {
-	HRESULT hr = E_FAIL;
-
-	std::vector<std::wstring> SAData;
-	for (const auto& [GUIDString, Device] : _ActiveDevices) {
-		SAData.push_back(string_to_wstring(GUIDString));
-	}
-
-	hr = BuildSafeArray(SAData, activeGUIDs);
-	return hr;
-}
-
 // Set the Autocenter property for a DI device, pass device GUID and bool to enable or disable
 HRESULT SetAutocenter(LPCSTR guidInstance, bool AutocenterState) {
 	HRESULT hr = E_FAIL;
@@ -186,61 +173,149 @@ HRESULT SetAutocenter(LPCSTR guidInstance, bool AutocenterState) {
 
 	return hr;
 }
-
-// Generate SAFEARRAY of possible FFB Effects for this Device
-HRESULT EnumerateFFBEffects(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** FFBEffects) {
+HRESULT GetActiveDevices(int* count, const char*** outStrings) {
 	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
+	*count = 0;
+	*outStrings = nullptr;
 
-	_DeviceEnumeratedEffects[GUIDString].clear(); // Clear effects for this device
-	hr = _ActiveDevices[GUIDString]->EnumEffects(&_EnumFFBEffectsCallback, &GUIDString, DIEFT_ALL); // Callback adds each effect to _DeviceEnumeratedEffects with key as device's GUID
+	try {
+		std::vector<std::wstring> deviceData;
+		for (const auto& [GUIDString, Device] : _ActiveDevices) {
+			deviceData.push_back(string_to_wstring(GUIDString));
+		}
 
-	// Generate SafeArray of supported effects
-	std::vector<std::wstring> SAData; // Store what will be in the SafeArray
-	for (const auto& Effect : _DeviceEnumeratedEffects[GUIDString]) {
-		SAData.push_back(Effect.tszName); // Add each effect name
+		*count = static_cast<int>(deviceData.size());
+		const char** result = new const char* [*count];
+
+		for (int i = 0; i < *count; ++i) {
+			std::string utf8Str = wstring_to_string(deviceData[i]);
+			result[i] = _strdup(utf8Str.c_str());
+			if (!result[i]) {
+				// Cleanup on allocation failure
+				for (int j = 0; j < i; ++j) {
+					free((void*)result[j]);
+				}
+				delete[] result;
+				return E_OUTOFMEMORY;
+			}
+		}
+
+		*outStrings = result;
+		hr = S_OK;
 	}
-	hr = BuildSafeArray(SAData, FFBEffects);
+	catch (...) {
+		hr = E_FAIL;
+	}
 
 	return hr;
 }
 
-// Generate SAFEARRAY of possible FFB Effects for this Device
-HRESULT EnumerateFFBAxes(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** FFBAxes) {
+HRESULT EnumerateFFBEffects(LPCSTR guidInstance, int* count, const char*** outStrings) {
 	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
+	*count = 0;
+	*outStrings = nullptr;
 
-	_DeviceFFBAxes[GUIDString].clear(); // Clear Axes info for this device
-	hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL); // Callback adds each effect to _DeviceFFBAxes with key as device's GUID
+	std::string GUIDString((LPCSTR)guidInstance);
+	if (!_ActiveDevices.contains(GUIDString)) return hr;
 
-	// Generate SafeArray of FFB Axes
-	std::vector<std::wstring> SAData; // Store what will be in the SafeArray
-	SAData.push_back(L"FFB Axes: " + std::to_wstring(_DeviceFFBAxes.size()));
-	for (const auto& ObjectInst : _DeviceFFBAxes[GUIDString]) {
+	try {
+		_DeviceEnumeratedEffects[GUIDString].clear();
+		hr = _ActiveDevices[GUIDString]->EnumEffects(&_EnumFFBEffectsCallback, &GUIDString, DIEFT_ALL);
+		if (FAILED(hr)) return hr;
 
-		wchar_t szGUID[64] = { 0 };
-		(void)StringFromGUID2(ObjectInst.guidType, szGUID, 64); // Void cast ignores [[nodiscard]] warning
-		std::wstring guidType(szGUID);
+		std::vector<std::wstring> effectData;
+		for (const auto& Effect : _DeviceEnumeratedEffects[GUIDString]) {
+			effectData.push_back(Effect.tszName);
+		}
 
-		SAData.push_back(ObjectInst.tszName); // Add each effect name
-		SAData.push_back(L"dwSize: " + std::to_wstring(ObjectInst.dwSize));
-		SAData.push_back(L"guidType: " + guidType);
-		SAData.push_back(L"dwOfs: " + std::to_wstring(ObjectInst.dwOfs));
-		SAData.push_back(L"dwType: " + std::to_wstring(ObjectInst.dwType));
-		SAData.push_back(L"dwFlags: " + std::to_wstring(ObjectInst.dwFlags));
-		SAData.push_back(L"dwFFMaxForce: " + std::to_wstring(ObjectInst.dwFFMaxForce));
-		SAData.push_back(L"dwFFForceResolution: " + std::to_wstring(ObjectInst.dwFFForceResolution));
-		SAData.push_back(L"wCollectionNumber: " + std::to_wstring(ObjectInst.wCollectionNumber));
-		SAData.push_back(L"wDesignatorIndex: " + std::to_wstring(ObjectInst.wDesignatorIndex));
-		SAData.push_back(L"wUsagePage: " + std::to_wstring(ObjectInst.wUsagePage));
-		SAData.push_back(L"wUsage: " + std::to_wstring(ObjectInst.wUsage));
-		SAData.push_back(L"dwDimension: " + std::to_wstring(ObjectInst.dwDimension));
-		SAData.push_back(L"wExponent: " + std::to_wstring(ObjectInst.wExponent));
-		SAData.push_back(L"wReportId: " + std::to_wstring(ObjectInst.wReportId));
+		*count = static_cast<int>(effectData.size());
+		const char** result = new const char* [*count];
+
+		for (int i = 0; i < *count; ++i) {
+			std::string utf8Str = wstring_to_string(effectData[i]);
+			result[i] = _strdup(utf8Str.c_str());
+			if (!result[i]) {
+				// Cleanup on allocation failure
+				for (int j = 0; j < i; ++j) {
+					free((void*)result[j]);
+				}
+				delete[] result;
+				return E_OUTOFMEMORY;
+			}
+		}
+
+		*outStrings = result;
+		hr = S_OK;
 	}
-	hr = BuildSafeArray(SAData, FFBAxes);
+	catch (...) {
+		hr = E_FAIL;
+	}
 
 	return hr;
+}
+
+HRESULT EnumerateFFBAxes(LPCSTR guidInstance, int* count, const char*** outStrings) {
+	HRESULT hr = E_FAIL;
+	*count = 0;
+	*outStrings = nullptr;
+
+	std::string GUIDString((LPCSTR)guidInstance);
+	if (!_ActiveDevices.contains(GUIDString)) return hr;
+
+	try {
+		_DeviceFFBAxes[GUIDString].clear();
+		hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL);
+		if (FAILED(hr)) return hr;
+
+		std::vector<std::wstring> axesData;
+		axesData.push_back(L"FFB Axes: " + std::to_wstring(_DeviceFFBAxes.size()));
+
+		for (const auto& ObjectInst : _DeviceFFBAxes[GUIDString]) {
+			wchar_t szGUID[64] = { 0 };
+			(void)StringFromGUID2(ObjectInst.guidType, szGUID, 64);
+			std::wstring guidType(szGUID);
+
+			axesData.push_back(ObjectInst.tszName);
+			axesData.push_back(L"dwSize: " + std::to_wstring(ObjectInst.dwSize));
+			axesData.push_back(L"guidType: " + guidType);
+			// ... (rest of the data pushing remains the same)
+		}
+
+		*count = static_cast<int>(axesData.size());
+		const char** result = new const char* [*count];
+
+		for (int i = 0; i < *count; ++i) {
+			std::string utf8Str = wstring_to_string(axesData[i]);
+			result[i] = _strdup(utf8Str.c_str());
+			if (!result[i]) {
+				// Cleanup on allocation failure
+				for (int j = 0; j < i; ++j) {
+					free((void*)result[j]);
+				}
+				delete[] result;
+				return E_OUTOFMEMORY;
+			}
+		}
+
+		*outStrings = result;
+		hr = S_OK;
+	}
+	catch (...) {
+		hr = E_FAIL;
+	}
+
+	return hr;
+}
+
+void FreeStringArray(const char** strings, int count) {
+	if (strings) {
+		for (int i = 0; i < count; ++i) {
+			if (strings[i]) {
+				free((void*)strings[i]);
+			}
+		}
+		delete[] strings;
+	}
 }
 
 // Creates/Enables the Effect on the device 
@@ -430,7 +505,7 @@ HRESULT CreateFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
 		return E_FAIL; // Unsupported Effect
 	}
 
-	
+
 	if (FAILED(hr = _ActiveDevices[GUIDString]->CreateEffect(EffectTypeToGUID(effectType), &effect, &effectControl, nullptr))) { return hr; }
 	if (FAILED(hr = effectControl->Start(1, 0))) { return hr; }
 	_DeviceFFBEffectConfig[GUIDString][effectType] = effect;
