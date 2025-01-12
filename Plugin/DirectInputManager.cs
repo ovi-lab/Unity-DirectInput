@@ -47,6 +47,9 @@ namespace DirectInputManager
 
         [DllImport(DLLFile)] public static extern int DEBUG1(string guidInstance, [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_BSTR)] out string[] DEBUGDATA);
     }
+#if UNITY_STANDALONE_WIN
+    [DefaultExecutionOrder(-1000)]
+#endif
     public class DIManager
     {
         // Define all callback delegates at class level with proper attributes
@@ -267,7 +270,6 @@ namespace DirectInputManager
             }
         }
 
-        // Add this helper method to the DIManager class
         private static string[] ReadStringArray(IntPtr stringsPtr, int count)
         {
             string[] result = new string[count];
@@ -1079,6 +1081,9 @@ namespace DirectInputManager
     /// Invocation: DebouncerName.Debounce(() => { Console.WriteLine("Executed"); });<br/>
     /// Source: https://stackoverflow.com/a/47933557/3055031 (Modifed)
     /// </summary>
+#if UNITY_STANDALONE_WIN
+    [DefaultExecutionOrder(-750)]
+#endif
     public class Debouncer
     {
         private List<CancellationTokenSource> CancelTokens = new List<CancellationTokenSource>();
