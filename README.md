@@ -54,6 +54,7 @@ The community has tested and verified these devices do indeed work. Albeit not a
 
 | Peripheral                         | Test Status    |
 |------------------------------------|----------------|
+| [Simucube Ultimate 2](https://simucube.com/simucube-2-ultimate) | ✅ Verified    |
 | [Fanatec CSL DD (Both PC & Comp mode + 8NM Kit)](https://fanatec.com/eu-en/csl-dd-8-nm) | ✅ Verified    |
 | [Fanatec CSL Elite](https://fanatec.com/eu-en/racing-wheels-wheel-bases/wheel-bases/csl-elite-wheel-base-officially-licensed-for-playstation) | ✅ Verified    |
 | [Fanatec CSW V2.0](https://fanatec.com/eu-en/racing-wheels-wheel-bases/wheel-bases/clubsport-wheel-base-v2-servo) | ✅ Verified    |

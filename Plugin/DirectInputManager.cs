@@ -23,7 +23,7 @@ namespace DirectInputManager
 #else
         const string DLLFile = @"..\..\..\..\..\Plugin\DLL\DirectInputForceFeedback.dll";
 #endif
-
+        [DllImport(DLLFile)] public static extern void InitializeForStandalone();
         [DllImport(DLLFile)] public static extern int StartDirectInput();
         [DllImport(DLLFile)] public static extern int StopDirectInput();
         [DllImport(DLLFile)] public static extern IntPtr EnumerateDevices(out int deviceCount);
@@ -67,7 +67,20 @@ namespace DirectInputManager
         const string DLLFile = @"DirectInputForceFeedback.dll";
         private static uint ClampAgnostic(uint value, uint min, uint max) => (uint)Mathf.Clamp(value, min, max);
         private static int ClampAgnostic(int value, int min, int max) => Mathf.Clamp(value, min, max);
-        private static void DebugLog(string message) => UnityEngine.Debug.Log($"<color=#9416f9>[DirectInputManager]</color> <color=#ff0000>{message}</color>");
+
+        private static DirectInputLogger logger;
+
+        internal static bool showLogsRuntime;
+        private static void DebugLog(string message)
+        {
+            // Send to console too
+            UnityEngine.Debug.Log($"<color=#9416f9>[DirectInputManager]</color> <color=#ff0000>{message}</color>");
+            if (Application.isPlaying && showLogsRuntime)
+            {
+                DirectInputLogger.AddLog(message);
+            }
+
+        }
 #else
         const string DLLFile = @"..\..\..\..\..\Plugin\DLL\DirectInputForceFeedback.dll";
         private static uint ClampAgnostic(uint value, uint min, uint max) => Math.Clamp(value, min, max);
@@ -106,6 +119,9 @@ namespace DirectInputManager
             if (_isInitialized) { return _isInitialized; }
             try
             {
+#if !UNITY_STANDALONE_WIN
+                Native.InitializeForStandalone();
+#endif
                 if (Native.StartDirectInput() != 0) { return _isInitialized = false; }
                 s_deviceChangeCallback = OnDeviceChange;
                 Native.SetDeviceChangeCallback(OnDeviceChange);

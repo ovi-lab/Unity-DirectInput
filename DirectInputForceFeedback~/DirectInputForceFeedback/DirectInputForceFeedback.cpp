@@ -1,50 +1,112 @@
 // DirectInputForceFeedback.cpp : Defines the exported functions for the DLL.
 #include "pch.h"
-#include <algorithm>  // for std::clamp
-#include <limits>    // for UINT16_MAX
+#include <algorithm>
+#include <limits>
+#include <cstdlib>
 #include "DirectInputForceFeedback.h"
+#include <strsafe.h>
 
-typedef std::string DeviceGUID; // Alias to make it clearer what maps below use as key
+// Global variables
+LPDIRECTINPUT8 _DirectInput = nullptr;
+bool g_UnityInitialized = false;
+std::string g_LastErrorMessage;
 
-std::vector< DeviceInfo >                                               _DeviceInstances;         // Store devices available for connection
-std::map   < DeviceGUID, LPDIRECTINPUTDEVICE8 >                         _ActiveDevices;           // Store all of the connected devices
-std::map   < DeviceGUID, std::vector<DIEFFECTINFO> >                    _DeviceEnumeratedEffects; // Store the available FFB Effects for devices
-std::map   < DeviceGUID, std::vector<DIDEVICEOBJECTINSTANCE> >          _DeviceFFBAxes;           // Store the Axes available for FFB
-std::map   < DeviceGUID, std::map<Effects::Type, DIEFFECT> >            _DeviceFFBEffectConfig;   // Effect Configuration
-std::map   < DeviceGUID, std::map<Effects::Type, LPDIRECTINPUTEFFECT> > _DeviceFFBEffectControl;  // Handle to Start/Stop Effect
+typedef std::string DeviceGUID;
+
+std::vector<DeviceInfo> _DeviceInstances;
+std::map<DeviceGUID, LPDIRECTINPUTDEVICE8> _ActiveDevices;
+std::map<DeviceGUID, std::vector<DIEFFECTINFO>> _DeviceEnumeratedEffects;
+std::map<DeviceGUID, std::vector<DIDEVICEOBJECTINSTANCE>> _DeviceFFBAxes;
+std::map<DeviceGUID, std::map<Effects::Type, DIEFFECT>> _DeviceFFBEffectConfig;
+std::map<DeviceGUID, std::map<Effects::Type, LPDIRECTINPUTEFFECT>> _DeviceFFBEffectControl;
 
 DeviceChangeCallback g_deviceCallback = nullptr;
+std::vector<std::wstring> DEBUGDATA;
 
-std::vector<std::wstring> DEBUGDATA; // Used for Debugging during development
+// Unity plugin lifecycle functions
+extern "C" DIRECTINPUTFORCEFEEDBACK_API void UNITY_INTERFACE_API UnityPluginLoad(void* unityInterfaces) {
+	g_UnityInitialized = true;
+	LogMessage("UnityPluginLoad called");
+	StartDirectInput();
+}
 
-//////////////////////////////////////////////////////////////
+extern "C" DIRECTINPUTFORCEFEEDBACK_API void UNITY_INTERFACE_API UnityPluginUnload() {
+	g_UnityInitialized = false;
+	LogMessage("UnityPluginUnload called");
+	StopDirectInput();
+}
+
+extern "C" DIRECTINPUTFORCEFEEDBACK_API int UNITY_INTERFACE_API GetPluginVersion() {
+	return 1; // Increment this when making significant changes
+}
+
+extern "C" DIRECTINPUTFORCEFEEDBACK_API void InitializeForStandalone() {
+	// Call UnityPluginLoad with a null pointer or dummy value
+	UnityPluginLoad(nullptr);
+}
+
+// Logging function
+void LogMessage(const char* format, ...) {
+	char buffer[1024];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	OutputDebugStringA(buffer);
+	OutputDebugStringA("\n");
+}
+
+// Helper function to set last error message
+void SetLastErrorMessage(const char* message) {
+	g_LastErrorMessage = message;
+}
+
 // DLL Exported Functions
-//////////////////////////////////////////////////////////////
+DIRECTINPUTFORCEFEEDBACK_API HRESULT StartDirectInput() {
+	if (_DirectInput != nullptr) {
+		LogMessage("DirectInput already initialized");
+		return S_OK;
+	}
 
-// Create the _DirectInput global
-HRESULT StartDirectInput() {
-	if (_DirectInput != NULL) { return S_OK; } // Already initialised
-
-	// Setup Device Change Detection (Add/Remove Device Events)
-	SetWindowsHookExW(WH_CALLWNDPROC, (HOOKPROC)&_WindowsHookCallback, GetModuleHandleW(NULL), GetCurrentThreadId());
-
-	return DirectInput8Create( // Create DirectInput
+	HRESULT hr = DirectInput8Create(
 		GetModuleHandle(NULL),
 		DIRECTINPUT_VERSION,
 		IID_IDirectInput8,
-		(void**)&_DirectInput, // Place our DirectInput instance in _DirectInput
+		(void**)&_DirectInput,
 		NULL
 	);
+
+	if (FAILED(hr)) {
+		LogMessage("Failed to initialize DirectInput: 0x%08X", hr);
+		SetLastErrorMessage("Failed to initialize DirectInput");
+		return hr;
+	}
+
+	LogMessage("DirectInput initialized successfully");
+	return S_OK;
 }
 
-// Stop _DirectInput
-HRESULT StopDirectInput() {
-	HRESULT hr = E_FAIL;
-	if (_DirectInput == NULL) { return hr = S_OK; } // No DirectInput Instance
+DIRECTINPUTFORCEFEEDBACK_API HRESULT StopDirectInput() {
+	HRESULT hr = S_OK;
 
-	for (const auto& [GUIDString, Device] : _ActiveDevices) { // For each device
-		// TODO: Stop Effects?
-		if (FAILED(hr = Device->Unacquire())) { return hr; }
+	if (_DirectInput == nullptr) {
+		LogMessage("DirectInput already stopped");
+		return S_OK;
+	}
+
+	for (const auto& [GUIDString, Device] : _ActiveDevices) {
+		hr = StopAllFFBEffects(GUIDString.c_str());
+		if (FAILED(hr)) {
+			LogMessage("Failed to stop FFB effects for device %s: 0x%08X", GUIDString.c_str(), hr);
+		}
+
+		hr = Device->Unacquire();
+		if (FAILED(hr)) {
+			LogMessage("Failed to unacquire device %s: 0x%08X", GUIDString.c_str(), hr);
+		}
+
+		Device->Release();
 	}
 
 	_DeviceInstances.clear();
@@ -54,131 +116,399 @@ HRESULT StopDirectInput() {
 	_DeviceFFBEffectConfig.clear();
 	_DeviceFFBEffectControl.clear();
 
-	_DirectInput = NULL;
-
-	return hr;
-}
-
-// Return a vector of all attached devices
-DeviceInfo* EnumerateDevices(/*[out]*/ int& deviceCount) {
-	HRESULT hr = E_FAIL;
-	if (_DirectInput == NULL) { return NULL; } // If DI not ready, return nothing
-	_DeviceInstances.clear();                  // Clear devices
-
-	// First fetch all devices
-	hr = _DirectInput->EnumDevices(    // Invoke device enumeration to the _EnumDevicesCallback callback
-		DI8DEVCLASS_GAMECTRL,                    // List devices of type GameController
-		_EnumDevicesCallback,                    // Callback executed for each device found
-		NULL,                                    // Passed to callback as optional arg
-		DIEDFL_ATTACHEDONLY //| DIEDFL_FORCEFEEDBACK
-	);
-
-	// Next update FFB devices (Important this happens after as it modifies existing entries)
-	hr = _DirectInput->EnumDevices(    // Invoke device enumeration to the _EnumDevicesCallback callback
-		DI8DEVCLASS_GAMECTRL,                    // List devices of type GameController
-		_EnumDevicesCallbackFFB,                 // Callback executed for each device found
-		NULL,                                    // Passed to callback as optional arg
-		DIEDFL_ATTACHEDONLY | DIEDFL_FORCEFEEDBACK
-	);
-
-	if (_DeviceInstances.size() > 0) {
-		deviceCount = (int)_DeviceInstances.size();
-		return &_DeviceInstances[0]; // Return 1st element, structure size & deviceCount are used to find next elements
-	}
-	else {
-		deviceCount = 0;
-	}
-	return NULL;
-}
-
-// Create the DirectInput Device and Acquire ready for State retreval & FFB Effects (Requires Cooperation level Exclusive)
-// Pass the GUID (as a string) of the Device you'd like to attach to, GUID obtained from the Enumerated Devices 
-HRESULT CreateDevice(LPCSTR guidInstance) {
-	HRESULT hr;
-	DestroyDeviceIfExists(guidInstance); // If device exists, clear it first
-
-	LPDIRECTINPUTDEVICE8 DIDevice;
-	if (FAILED(hr = _DirectInput->CreateDevice(LPCSTRGUIDtoGUID(guidInstance), &DIDevice, NULL))) { return hr; }
-	if (FAILED(hr = DIDevice->SetDataFormat(&c_dfDIJoystick2))) { return hr; }
-	if (FAILED(hr = DIDevice->SetCooperativeLevel(FindMainWindow(GetCurrentProcessId()), DISCL_EXCLUSIVE | DISCL_BACKGROUND))) { return hr; }
-	if (FAILED(hr = DIDevice->Acquire())) { return hr; }
-
-	std::string GUIDString((LPCSTR)guidInstance); // Convert the LPCSTR to a STL String for use as key in map (String as GUID has no operater<)
-	_ActiveDevices[GUIDString] = DIDevice; // Store Device in _ActiveDevices Map to be referenced later
-
-	return hr;
-}
-
-// Remove the DirectInput Device, Unacquire and remove from ActiveDevices
-HRESULT DestroyDevice(LPCSTR guidInstance) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-
-	StopAllFFBEffects(guidInstance);
-	if (SUCCEEDED(hr = _ActiveDevices[GUIDString]->Unacquire())) {
-		_ActiveDevices.erase(GUIDString);
+	if (_DirectInput) {
+		_DirectInput->Release();
+		_DirectInput = nullptr;
 	}
 
-	return hr;
+	LogMessage("DirectInput stopped successfully");
+	return S_OK;
 }
-
-// Fetch the Device State, give GUID of the Device (Must already be created by CreateDevice) and out FlatJoyState2
-HRESULT GetDeviceState(LPCSTR guidInstance, /*[out]*/ FlatJoyState2& deviceState) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-
-	DIJOYSTATE2 DeviceStateRaw = {};
-	hr = _ActiveDevices[GUIDString]->GetDeviceState(sizeof(DIJOYSTATE2), &DeviceStateRaw); // Fetch the device State
-	deviceState = FlattenDIJOYSTATE2(DeviceStateRaw); // Convert to a friendlier format (Nested arrays are more difficult to check for change)
-
-	return hr;
-}
-
-// Fetch the Device State, give GUID of the Device (Must already be created by CreateDevice) and out DIJOYSTATE2
-HRESULT GetDeviceStateRaw(LPCSTR guidInstance, /*[out]*/ DIJOYSTATE2& deviceState) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-
-	hr = _ActiveDevices[GUIDString]->GetDeviceState(sizeof(DIJOYSTATE2), &deviceState); // Fetch the device State
-
-	return hr;
-}
-
-// Fetch the capabilities of the device, returns DIDEVCAPS see https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416607(v=vs.85)
-HRESULT GetDeviceCapabilities(LPCSTR guidInstance, /*[out]*/ DIDEVCAPS& deviceCapabilitiesOut) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-
-	DIDEVCAPS DeviceCapabilities;
-	DeviceCapabilities.dwSize = sizeof(DIDEVCAPS);
-	hr = _ActiveDevices[GUIDString]->GetCapabilities(&DeviceCapabilities);
-	deviceCapabilitiesOut = DeviceCapabilities;
-
-	return hr;
-}
-
-// Set the Autocenter property for a DI device, pass device GUID and bool to enable or disable
-HRESULT SetAutocenter(LPCSTR guidInstance, bool AutocenterState) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-	DIPROPDWORD DIPropAutoCenter = {};
-
-	DIPropAutoCenter.diph.dwSize = sizeof(DIPropAutoCenter);
-	DIPropAutoCenter.diph.dwHeaderSize = sizeof(DIPROPHEADER);
-	DIPropAutoCenter.diph.dwObj = 0;
-	DIPropAutoCenter.diph.dwHow = DIPH_DEVICE;
-	DIPropAutoCenter.dwData = AutocenterState ? DIPROPAUTOCENTER_ON : DIPROPAUTOCENTER_OFF;
-
-	hr = _ActiveDevices[GUIDString]->SetProperty(DIPROP_AUTOCENTER, &DIPropAutoCenter.diph);
-
-	return hr;
-}
-HRESULT GetActiveDevices(int* count, const char*** outStrings) {
-	HRESULT hr = E_FAIL;
-	*count = 0;
-	*outStrings = nullptr;
-
+DIRECTINPUTFORCEFEEDBACK_API DeviceInfo* EnumerateDevices(int& deviceCount) {
 	try {
+		HRESULT hr = E_FAIL;
+		deviceCount = 0;
+
+		if (_DirectInput == nullptr) {
+			LogMessage("EnumerateDevices: DirectInput not initialized");
+			SetLastErrorMessage("DirectInput not initialized");
+			return nullptr;
+		}
+
+		_DeviceInstances.clear();
+
+		// Enumerate all game controllers
+		hr = _DirectInput->EnumDevices(
+			DI8DEVCLASS_GAMECTRL,
+			_EnumDevicesCallback,
+			NULL,
+			DIEDFL_ATTACHEDONLY
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("EnumerateDevices: Failed to enumerate devices: 0x%08X", hr);
+			SetLastErrorMessage("Failed to enumerate devices");
+			return nullptr;
+		}
+
+		// Enumerate FFB devices (update FFBCapable)
+		hr = _DirectInput->EnumDevices(
+			DI8DEVCLASS_GAMECTRL,
+			_EnumDevicesCallbackFFB,
+			NULL,
+			DIEDFL_ATTACHEDONLY | DIEDFL_FORCEFEEDBACK
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("EnumerateDevices: Failed to enumerate FFB devices: 0x%08X", hr);
+			SetLastErrorMessage("Failed to enumerate FFB devices");
+			return nullptr;
+		}
+
+		if (!_DeviceInstances.empty()) {
+			deviceCount = static_cast<int>(_DeviceInstances.size());
+			LogMessage("EnumerateDevices: Found %d devices", deviceCount);
+			return &_DeviceInstances[0];
+		}
+		else {
+			LogMessage("EnumerateDevices: No devices found");
+			return nullptr;
+		}
+	}
+	catch (const std::exception& e) {
+		LogMessage("EnumerateDevices: Exception: %s", e.what());
+		SetLastErrorMessage(e.what());
+		deviceCount = 0;
+		return nullptr;
+	}
+	catch (...) {
+		LogMessage("EnumerateDevices: Unknown exception");
+		SetLastErrorMessage("Unknown exception in EnumerateDevices");
+		deviceCount = 0;
+		return nullptr;
+	}
+}
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateDevice(LPCSTR guidInstance) {
+	try {
+		HRESULT hr = E_FAIL;
+
+		// Check if Unity is initialized
+		if (!g_UnityInitialized) {
+			LogMessage("CreateDevice: Unity not initialized");
+			SetLastErrorMessage("Unity not initialized");
+			return DIERR_UNITYNOTINITIALIZED;
+		}
+
+		// Check if DirectInput is initialized
+		if (_DirectInput == nullptr) {
+			LogMessage("CreateDevice: DirectInput not initialized");
+			SetLastErrorMessage("DirectInput not initialized");
+			return DIERR_NOTINITIALIZED;
+		}
+
+		// Check if guidInstance is valid
+		if (!guidInstance) {
+			LogMessage("CreateDevice: Invalid GUID (null)");
+			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Clear existing device if present
+		DestroyDeviceIfExists(guidInstance);
+
+		std::string GUIDString(guidInstance);
+		LogMessage("CreateDevice: Creating device with GUID: %s", GUIDString.c_str());
+
+		LPDIRECTINPUTDEVICE8 DIDevice = nullptr;
+		hr = _DirectInput->CreateDevice(LPCSTRGUIDtoGUID(guidInstance), &DIDevice, NULL);
+		if (FAILED(hr)) {
+			LogMessage("CreateDevice: Failed to create device: 0x%08X", hr);
+			SetLastErrorMessage("Failed to create device");
+			return hr;
+		}
+
+		hr = DIDevice->SetDataFormat(&c_dfDIJoystick2);
+		if (FAILED(hr)) {
+			LogMessage("CreateDevice: Failed to set data format: 0x%08X", hr);
+			DIDevice->Release();
+			SetLastErrorMessage("Failed to set data format");
+			return hr;
+		}
+
+		// Get a valid window handle with fallback mechanism
+		HWND hWnd = GetForegroundWindow();
+		if (!hWnd) {
+			LogMessage("CreateDevice: No foreground window, using desktop window");
+			hWnd = GetDesktopWindow(); // Fallback to desktop window
+
+			if (!hWnd) {
+				LogMessage("CreateDevice: Failed to get any window handle");
+				DIDevice->Release();
+				SetLastErrorMessage("Failed to get window handle");
+				return DIERR_NOWINDOWHANDLE;
+			}
+		}
+
+		hr = DIDevice->SetCooperativeLevel(hWnd, DISCL_EXCLUSIVE | DISCL_BACKGROUND);
+		if (FAILED(hr)) {
+			LogMessage("CreateDevice: Failed to set cooperative level: 0x%08X", hr);
+			DIDevice->Release();
+			SetLastErrorMessage("Failed to set cooperative level");
+			return hr;
+		}
+
+		hr = DIDevice->Acquire();
+		if (FAILED(hr)) {
+			LogMessage("CreateDevice: Failed to acquire device: 0x%08X", hr);
+			DIDevice->Release();
+			SetLastErrorMessage("Failed to acquire device");
+			return hr;
+		}
+
+		_ActiveDevices[GUIDString] = DIDevice;
+		LogMessage("CreateDevice: Device created and acquired successfully");
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("CreateDevice: Exception: %s", e.what());
+		SetLastErrorMessage(e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("CreateDevice: Unknown exception");
+		SetLastErrorMessage("Unknown exception in CreateDevice");
+		return E_FAIL;
+	}
+}
+DIRECTINPUTFORCEFEEDBACK_API HRESULT DestroyDevice(LPCSTR guidInstance) {
+	try {
+		if (!guidInstance) {
+			LogMessage("DestroyDevice: Invalid GUID (null)");
+			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		LogMessage("DestroyDevice: Destroying device with GUID: %s", GUIDString.c_str());
+
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("DestroyDevice: Device not found");
+			SetLastErrorMessage("Device not found");
+			return E_FAIL;
+		}
+
+		HRESULT hr = StopAllFFBEffects(guidInstance);
+		if (FAILED(hr)) {
+			LogMessage("DestroyDevice: Failed to stop FFB effects: 0x%08X", hr);
+			// Continue anyway
+		}
+
+		LPDIRECTINPUTDEVICE8 device = _ActiveDevices[GUIDString];
+		hr = device->Unacquire();
+		if (FAILED(hr)) {
+			LogMessage("DestroyDevice: Failed to unacquire device: 0x%08X", hr);
+			// Continue anyway
+		}
+
+		device->Release();
+		_ActiveDevices.erase(GUIDString);
+		LogMessage("DestroyDevice: Device destroyed successfully");
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("DestroyDevice: Exception: %s", e.what());
+		SetLastErrorMessage(e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("DestroyDevice: Unknown exception");
+		SetLastErrorMessage("Unknown exception in DestroyDevice");
+		return E_FAIL;
+	}
+}
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceState(LPCSTR guidInstance, FlatJoyState2& deviceState) {
+	try {
+		if (!guidInstance) {
+			LogMessage("GetDeviceState: Invalid GUID (null)");
+			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("GetDeviceState: Device not found");
+			SetLastErrorMessage("Device not found");
+			return E_FAIL;
+		}
+
+		DIJOYSTATE2 DeviceStateRaw = {};
+		HRESULT hr = _ActiveDevices[GUIDString]->GetDeviceState(sizeof(DIJOYSTATE2), &DeviceStateRaw);
+
+		if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
+			LogMessage("GetDeviceState: Device input lost, reacquiring");
+			hr = _ActiveDevices[GUIDString]->Acquire();
+			if (FAILED(hr)) {
+				LogMessage("GetDeviceState: Failed to reacquire device: 0x%08X", hr);
+				SetLastErrorMessage("Failed to reacquire device");
+				return hr;
+			}
+			hr = _ActiveDevices[GUIDString]->GetDeviceState(sizeof(DIJOYSTATE2), &DeviceStateRaw);
+		}
+
+		if (FAILED(hr)) {
+			LogMessage("GetDeviceState: Failed to get device state: 0x%08X", hr);
+			SetLastErrorMessage("Failed to get device state");
+			return hr;
+		}
+
+		deviceState = FlattenDIJOYSTATE2(DeviceStateRaw);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("GetDeviceState: Exception: %s", e.what());
+		SetLastErrorMessage(e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("GetDeviceState: Unknown exception");
+		SetLastErrorMessage("Unknown exception in GetDeviceState");
+		return E_FAIL;
+	}
+}
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceStateRaw(LPCSTR guidInstance, DIJOYSTATE2& deviceState) {
+	try {
+		if (!guidInstance) {
+			LogMessage("GetDeviceStateRaw: Invalid GUID (null)");
+			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("GetDeviceStateRaw: Device not found");
+			SetLastErrorMessage("Device not found");
+			return E_FAIL;
+		}
+
+		HRESULT hr = _ActiveDevices[GUIDString]->GetDeviceState(sizeof(DIJOYSTATE2), &deviceState);
+
+		if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
+			LogMessage("GetDeviceStateRaw: Device input lost, reacquiring");
+			hr = _ActiveDevices[GUIDString]->Acquire();
+			if (FAILED(hr)) {
+				LogMessage("GetDeviceStateRaw: Failed to reacquire device: 0x%08X", hr);
+				SetLastErrorMessage("Failed to reacquire device");
+				return hr;
+			}
+			hr = _ActiveDevices[GUIDString]->GetDeviceState(sizeof(DIJOYSTATE2), &deviceState);
+		}
+
+		if (FAILED(hr)) {
+			LogMessage("GetDeviceStateRaw: Failed to get device state: 0x%08X", hr);
+			SetLastErrorMessage("Failed to get device state");
+			return hr;
+		}
+
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("GetDeviceStateRaw: Exception: %s", e.what());
+		SetLastErrorMessage(e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("GetDeviceStateRaw: Unknown exception");
+		SetLastErrorMessage("Unknown exception in GetDeviceStateRaw");
+		return E_FAIL;
+	}
+}
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceCapabilities(LPCSTR guidInstance, DIDEVCAPS& deviceCapabilitiesOut) {
+	try {
+		if (!guidInstance) {
+			LogMessage("GetDeviceCapabilities: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("GetDeviceCapabilities: Device not found");
+			return E_FAIL;
+		}
+
+		DIDEVCAPS DeviceCapabilities = {};
+		DeviceCapabilities.dwSize = sizeof(DIDEVCAPS);
+		HRESULT hr = _ActiveDevices[GUIDString]->GetCapabilities(&DeviceCapabilities);
+
+		if (FAILED(hr)) {
+			LogMessage("GetDeviceCapabilities: Failed to get capabilities: 0x%08X", hr);
+			return hr;
+		}
+
+		deviceCapabilitiesOut = DeviceCapabilities;
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("GetDeviceCapabilities: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("GetDeviceCapabilities: Unknown exception");
+		return E_FAIL;
+	}
+}
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT SetAutocenter(LPCSTR guidInstance, bool AutocenterState) {
+	try {
+		if (!guidInstance) {
+			LogMessage("SetAutocenter: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("SetAutocenter: Device not found");
+			return E_FAIL;
+		}
+
+		DIPROPDWORD DIPropAutoCenter = {};
+		DIPropAutoCenter.diph.dwSize = sizeof(DIPropAutoCenter);
+		DIPropAutoCenter.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+		DIPropAutoCenter.diph.dwObj = 0;
+		DIPropAutoCenter.diph.dwHow = DIPH_DEVICE;
+		DIPropAutoCenter.dwData = AutocenterState ? DIPROPAUTOCENTER_ON : DIPROPAUTOCENTER_OFF;
+
+		HRESULT hr = _ActiveDevices[GUIDString]->SetProperty(DIPROP_AUTOCENTER, &DIPropAutoCenter.diph);
+		if (FAILED(hr)) {
+			LogMessage("SetAutocenter: Failed to set autocenter: 0x%08X", hr);
+			return hr;
+		}
+
+		LogMessage("SetAutocenter: Autocenter set to %s", AutocenterState ? "ON" : "OFF");
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("SetAutocenter: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("SetAutocenter: Unknown exception");
+		return E_FAIL;
+	}
+}
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetActiveDevices(int* count, const char*** outStrings) {
+	try {
+		*count = 0;
+		*outStrings = nullptr;
+
+		if (_ActiveDevices.empty()) {
+			LogMessage("GetActiveDevices: No active devices");
+			return S_OK;
+		}
+
 		std::vector<std::wstring> deviceData;
 		for (const auto& [GUIDString, Device] : _ActiveDevices) {
 			deviceData.push_back(string_to_wstring(GUIDString));
@@ -191,37 +521,49 @@ HRESULT GetActiveDevices(int* count, const char*** outStrings) {
 			std::string utf8Str = wstring_to_string(deviceData[i]);
 			result[i] = _strdup(utf8Str.c_str());
 			if (!result[i]) {
-				// Cleanup on allocation failure
-				for (int j = 0; j < i; ++j) {
+				for (int j = 0; j < i; ++j)
 					free((void*)result[j]);
-				}
 				delete[] result;
+				LogMessage("GetActiveDevices: Memory allocation failed");
 				return E_OUTOFMEMORY;
 			}
 		}
 
 		*outStrings = result;
-		hr = S_OK;
+		LogMessage("GetActiveDevices: Found %d active devices", *count);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("GetActiveDevices: Exception: %s", e.what());
+		return E_FAIL;
 	}
 	catch (...) {
-		hr = E_FAIL;
+		LogMessage("GetActiveDevices: Unknown exception");
+		return E_FAIL;
 	}
-
-	return hr;
 }
-
-HRESULT EnumerateFFBEffects(LPCSTR guidInstance, int* count, const char*** outStrings) {
-	HRESULT hr = E_FAIL;
-	*count = 0;
-	*outStrings = nullptr;
-
-	std::string GUIDString((LPCSTR)guidInstance);
-	if (!_ActiveDevices.contains(GUIDString)) return hr;
-
+DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBEffects(LPCSTR guidInstance, int* count, const char*** outStrings) {
 	try {
+		*count = 0;
+		*outStrings = nullptr;
+
+		if (!guidInstance) {
+			LogMessage("EnumerateFFBEffects: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("EnumerateFFBEffects: Device not found");
+			return E_FAIL;
+		}
+
 		_DeviceEnumeratedEffects[GUIDString].clear();
-		hr = _ActiveDevices[GUIDString]->EnumEffects(&_EnumFFBEffectsCallback, &GUIDString, DIEFT_ALL);
-		if (FAILED(hr)) return hr;
+		HRESULT hr = _ActiveDevices[GUIDString]->EnumEffects(&_EnumFFBEffectsCallback, &GUIDString, DIEFT_ALL);
+		if (FAILED(hr)) {
+			LogMessage("EnumerateFFBEffects: Failed to enumerate effects: 0x%08X", hr);
+			return hr;
+		}
 
 		std::vector<std::wstring> effectData;
 		for (const auto& Effect : _DeviceEnumeratedEffects[GUIDString]) {
@@ -229,85 +571,106 @@ HRESULT EnumerateFFBEffects(LPCSTR guidInstance, int* count, const char*** outSt
 		}
 
 		*count = static_cast<int>(effectData.size());
-		const char** result = new const char* [*count];
+		if (*count == 0) {
+			LogMessage("EnumerateFFBEffects: No effects found");
+			return S_OK;
+		}
 
+		const char** result = new const char* [*count];
 		for (int i = 0; i < *count; ++i) {
 			std::string utf8Str = wstring_to_string(effectData[i]);
 			result[i] = _strdup(utf8Str.c_str());
 			if (!result[i]) {
-				// Cleanup on allocation failure
-				for (int j = 0; j < i; ++j) {
+				for (int j = 0; j < i; ++j)
 					free((void*)result[j]);
-				}
 				delete[] result;
+				LogMessage("EnumerateFFBEffects: Memory allocation failed");
 				return E_OUTOFMEMORY;
 			}
 		}
 
 		*outStrings = result;
-		hr = S_OK;
+		LogMessage("EnumerateFFBEffects: Found %d effects", *count);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("EnumerateFFBEffects: Exception: %s", e.what());
+		return E_FAIL;
 	}
 	catch (...) {
-		hr = E_FAIL;
+		LogMessage("EnumerateFFBEffects: Unknown exception");
+		return E_FAIL;
 	}
-
-	return hr;
 }
 
-HRESULT EnumerateFFBAxes(LPCSTR guidInstance, int* count, const char*** outStrings) {
-	HRESULT hr = E_FAIL;
-	*count = 0;
-	*outStrings = nullptr;
-
-	std::string GUIDString((LPCSTR)guidInstance);
-	if (!_ActiveDevices.contains(GUIDString)) return hr;
-
+DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBAxes(LPCSTR guidInstance, int* count, const char*** outStrings) {
 	try {
+		*count = 0;
+		*outStrings = nullptr;
+
+		if (!guidInstance) {
+			LogMessage("EnumerateFFBAxes: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("EnumerateFFBAxes: Device not found");
+			return E_FAIL;
+		}
+
 		_DeviceFFBAxes[GUIDString].clear();
-		hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL);
-		if (FAILED(hr)) return hr;
+		HRESULT hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL);
+		if (FAILED(hr)) {
+			LogMessage("EnumerateFFBAxes: Failed to enumerate axes: 0x%08X", hr);
+			return hr;
+		}
 
 		std::vector<std::wstring> axesData;
-		axesData.push_back(L"FFB Axes: " + std::to_wstring(_DeviceFFBAxes.size()));
-
+		axesData.push_back(L"FFB Axes: " + std::to_wstring(_DeviceFFBAxes[GUIDString].size()));
 		for (const auto& ObjectInst : _DeviceFFBAxes[GUIDString]) {
 			wchar_t szGUID[64] = { 0 };
 			(void)StringFromGUID2(ObjectInst.guidType, szGUID, 64);
 			std::wstring guidType(szGUID);
-
 			axesData.push_back(ObjectInst.tszName);
 			axesData.push_back(L"dwSize: " + std::to_wstring(ObjectInst.dwSize));
 			axesData.push_back(L"guidType: " + guidType);
-			// ... (rest of the data pushing remains the same)
 		}
 
 		*count = static_cast<int>(axesData.size());
-		const char** result = new const char* [*count];
+		if (*count == 0) {
+			LogMessage("EnumerateFFBAxes: No axes found");
+			return S_OK;
+		}
 
+		const char** result = new const char* [*count];
 		for (int i = 0; i < *count; ++i) {
 			std::string utf8Str = wstring_to_string(axesData[i]);
 			result[i] = _strdup(utf8Str.c_str());
 			if (!result[i]) {
-				// Cleanup on allocation failure
-				for (int j = 0; j < i; ++j) {
+				for (int j = 0; j < i; ++j)
 					free((void*)result[j]);
-				}
 				delete[] result;
+				LogMessage("EnumerateFFBAxes: Memory allocation failed");
 				return E_OUTOFMEMORY;
 			}
 		}
 
 		*outStrings = result;
-		hr = S_OK;
+		LogMessage("EnumerateFFBAxes: Found %d axes entries", *count);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("EnumerateFFBAxes: Exception: %s", e.what());
+		return E_FAIL;
 	}
 	catch (...) {
-		hr = E_FAIL;
+		LogMessage("EnumerateFFBAxes: Unknown exception");
+		return E_FAIL;
 	}
-
-	return hr;
 }
 
-void FreeStringArray(const char** strings, int count) {
+DIRECTINPUTFORCEFEEDBACK_API void FreeStringArray(const char** strings, int count) {
 	if (strings) {
 		for (int i = 0; i < count; ++i) {
 			if (strings[i]) {
@@ -317,671 +680,984 @@ void FreeStringArray(const char** strings, int count) {
 		delete[] strings;
 	}
 }
+DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
+	try {
+		if (!guidInstance) {
+			LogMessage("CreateFFBEffect: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
 
-// Creates/Enables the Effect on the device 
-HRESULT CreateFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-
-	if (_DeviceFFBEffectControl[GUIDString].contains(effectType)) { return E_ABORT; } // Effect Already Exists on Device
-
-	//Enumerate FFBAxes if not already
-	if (!_DeviceFFBAxes.contains(GUIDString)) {
-		_DeviceFFBAxes[GUIDString].clear(); // Clear Axes info for this device
-		hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL); // Callback adds each effect to _DeviceFFBAxes with key as device's GUID
-	}
-
-
-
-	int FFBAxesCount = (int)_DeviceFFBAxes[GUIDString].size();
-	DWORD* FFBAxes = new DWORD[FFBAxesCount];
-	LONG* FFBDirections = new LONG[FFBAxesCount];
-
-	for (int idx = 0; idx < FFBAxesCount; idx++) {
-		FFBAxes[idx] = AxisTypeToDIJOFS(_DeviceFFBAxes[GUIDString][idx].guidType); // FFB Axis GUID to DirectInput representation
-		FFBDirections[idx] = 0; // Init this axis
-	}
-
-	// Create the Effect
-
-	DICONSTANTFORCE* constantForce = NULL;
-	DICONDITION* conditions = NULL;
-	DIRAMPFORCE* rampForce = new DIRAMPFORCE();
-	DIPERIODIC* periodicForce = new DIPERIODIC();
-	DICUSTOMFORCE* customForce = new DICUSTOMFORCE();
-	LPDIRECTINPUTEFFECT effectControl;
-	DIEFFECT effect = {}; // https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416616(v=vs.85)
-	effect.dwSize = sizeof(DIEFFECT);
-	effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
-	effect.dwDuration = INFINITE;
-	effect.dwSamplePeriod = 0;
-	effect.dwGain = DI_FFNOMINALMAX;
-	effect.dwTriggerButton = DIEB_NOTRIGGER;     // Start effect without requiring a button press
-	effect.dwTriggerRepeatInterval = 0;
-	effect.cAxes = FFBAxesCount;       // How many Axes will the effect be on (cannot be changed once it has been set)
-	effect.rgdwAxes = FFBAxes;            // Identifies the axes to which the effects will be applied (cannot be changed once it has been set)
-	effect.rglDirection = FFBDirections;      // Distribution of effect strength between Axes?
-	effect.lpEnvelope = 0;
-	effect.dwStartDelay = 0;
-
-
-
-	switch (effectType) {
-	case Effects::Type::ConstantForce:
-		constantForce = new DICONSTANTFORCE();
-		constantForce->lMagnitude = 0;
-		effect.cbTypeSpecificParams = sizeof(DICONSTANTFORCE);
-		effect.lpvTypeSpecificParams = constantForce;
-		break;
-
-	case Effects::Type::Spring:
-		conditions = new DICONDITION[FFBAxesCount];
-		ZeroMemory(conditions, sizeof(DICONDITION) * FFBAxesCount);
-		effect.cbTypeSpecificParams = sizeof(DICONDITION) * FFBAxesCount;
-		effect.lpvTypeSpecificParams = conditions;
-		break;
-
-	case Effects::Type::Damper:
-		conditions = new DICONDITION[FFBAxesCount];
-		ZeroMemory(conditions, sizeof(DICONDITION) * FFBAxesCount);
-		effect.cbTypeSpecificParams = sizeof(DICONDITION) * FFBAxesCount;
-		effect.lpvTypeSpecificParams = conditions;
-		break;
-
-	case Effects::Type::Friction:
-		conditions = new DICONDITION[FFBAxesCount];
-		ZeroMemory(conditions, sizeof(DICONDITION) * FFBAxesCount);
-		effect.cbTypeSpecificParams = sizeof(DICONDITION) * FFBAxesCount;
-		effect.lpvTypeSpecificParams = conditions;
-		break;
-
-	case Effects::Type::Inertia:
-		conditions = new DICONDITION[FFBAxesCount];
-		ZeroMemory(conditions, sizeof(DICONDITION) * FFBAxesCount);
-		effect.cbTypeSpecificParams = sizeof(DICONDITION) * FFBAxesCount;
-		effect.lpvTypeSpecificParams = conditions;
-		break;
-	case Effects::Type::Sine:
-	case Effects::Type::Square:
-	case Effects::Type::Triangle:
-	case Effects::Type::SawtoothUp:
-	case Effects::Type::SawtoothDown:
-		ZeroMemory(periodicForce, sizeof(DIPERIODIC));
-		periodicForce->dwMagnitude = 0;
-		periodicForce->lOffset = 0;
-		periodicForce->dwPhase = 0;
-		periodicForce->dwPeriod = 30000;
-		effect.cbTypeSpecificParams = sizeof(DIPERIODIC);
-		effect.lpvTypeSpecificParams = periodicForce;
-		break;
-	case Effects::Type::RampForce:
-		ZeroMemory(rampForce, sizeof(DIRAMPFORCE));
-		rampForce->lStart = 0;
-		rampForce->lEnd = 0;
-		effect.cbTypeSpecificParams = sizeof(DIRAMPFORCE);
-		effect.lpvTypeSpecificParams = rampForce;
-		break;
-	case Effects::Type::CustomForce: {
-		FILE* debugFile;
-		fopen_s(&debugFile, "ffb_custom_debug.txt", "a");
-		fprintf(debugFile, "\n=== Custom Force Creation Debug ===\n");
-		fprintf(debugFile, "Time: %s\n", __TIMESTAMP__);
-
-		// Get device capabilities
-		DIDEVCAPS deviceCaps = {};
-		deviceCaps.dwSize = sizeof(DIDEVCAPS);
-		if (FAILED(_ActiveDevices[GUIDString]->GetCapabilities(&deviceCaps))) {
-			fprintf(debugFile, "Failed to get device capabilities\n");
-			fclose(debugFile);
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("CreateFFBEffect: Device not found");
 			return E_FAIL;
 		}
 
-		fprintf(debugFile, "Device Capabilities:\n");
-		fprintf(debugFile, "- FFSamplePeriod: %lu microseconds\n", deviceCaps.dwFFSamplePeriod);
-		fprintf(debugFile, "- FFMinTimeResolution: %lu\n", deviceCaps.dwFFMinTimeResolution);
+		if (_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
+			LogMessage("CreateFFBEffect: Effect already exists");
+			return E_ABORT;
+		}
 
-		// Initialize custom force with proper parameters
-		ZeroMemory(customForce, sizeof(DICUSTOMFORCE));
-		customForce->cChannels = FFBAxesCount;  // Match actual axes count
-		customForce->dwSamplePeriod = deviceCaps.dwFFSamplePeriod;
-		customForce->cSamples = 2;  // At least two samples for interpolation
+		// Ensure FFBAxes are enumerated
+		if (!_DeviceFFBAxes.contains(GUIDString)) {
+			_DeviceFFBAxes[GUIDString].clear();
+			HRESULT hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL);
+			if (FAILED(hr)) {
+				LogMessage("CreateFFBEffect: Failed to enumerate FFB axes: 0x%08X", hr);
+				return hr;
+			}
+		}
 
-		// Allocate and initialize force data array
-		LONG* forceData = new LONG[customForce->cSamples];
-		forceData[0] = 0;    // Initial force
-		forceData[1] = 5000; // Final force
+		int FFBAxesCount = static_cast<int>(_DeviceFFBAxes[GUIDString].size());
+		if (FFBAxesCount == 0) {
+			LogMessage("CreateFFBEffect: No FFB axes found");
+			return E_FAIL;
+		}
 
-		customForce->rglForceData = forceData;
+		DWORD* FFBAxes = new DWORD[FFBAxesCount];
+		LONG* FFBDirections = new LONG[FFBAxesCount];
 
-		// Initialize effect structure
-		ZeroMemory(&effect, sizeof(DIEFFECT));
+		for (int idx = 0; idx < FFBAxesCount; idx++) {
+			FFBAxes[idx] = AxisTypeToDIJOFS(_DeviceFFBAxes[GUIDString][idx].guidType);
+			FFBDirections[idx] = 0;
+		}
+
+		// Prepare effect parameters based on type
+		DICONSTANTFORCE* constantForce = nullptr;
+		DICONDITION* conditions = nullptr;
+		DIRAMPFORCE* rampForce = nullptr;
+		DIPERIODIC* periodicForce = nullptr;
+		DICUSTOMFORCE* customForce = nullptr;
+		LPDIRECTINPUTEFFECT effectControl = nullptr;
+
+		DIEFFECT effect = {};
 		effect.dwSize = sizeof(DIEFFECT);
 		effect.dwFlags = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
 		effect.dwDuration = INFINITE;
-		effect.dwSamplePeriod = customForce->dwSamplePeriod;
+		effect.dwSamplePeriod = 0;
 		effect.dwGain = DI_FFNOMINALMAX;
 		effect.dwTriggerButton = DIEB_NOTRIGGER;
 		effect.dwTriggerRepeatInterval = 0;
 		effect.cAxes = FFBAxesCount;
 		effect.rgdwAxes = FFBAxes;
 		effect.rglDirection = FFBDirections;
-		effect.lpEnvelope = NULL;
-		effect.cbTypeSpecificParams = sizeof(DICUSTOMFORCE);
-		effect.lpvTypeSpecificParams = customForce;
+		effect.lpEnvelope = nullptr;
+		effect.dwStartDelay = 0;
 
-		fprintf(debugFile, "\nCustom Force Parameters:\n");
-		fprintf(debugFile, "- Channels: %lu\n", customForce->cChannels);
-		fprintf(debugFile, "- Sample Period: %lu microseconds\n", customForce->dwSamplePeriod);
-		fprintf(debugFile, "- Samples Count: %lu\n", customForce->cSamples);
-		fprintf(debugFile, "- Force Data[0]: %ld\n", customForce->rglForceData[0]);
-		fprintf(debugFile, "- Force Data[1]: %ld\n", customForce->rglForceData[1]);
+		LONG* forceData = nullptr;
+		HRESULT hr = E_FAIL;
 
-		fprintf(debugFile, "\nEffect Configuration:\n");
-		fprintf(debugFile, "- Effect Size: %lu\n", effect.dwSize);
-		fprintf(debugFile, "- Type Specific Params Size: %lu\n", effect.cbTypeSpecificParams);
-		fprintf(debugFile, "- Sample Period: %lu microseconds\n", effect.dwSamplePeriod);
-		fprintf(debugFile, "- Duration: %lu\n", effect.dwDuration);
-		fprintf(debugFile, "- Gain: %lu\n", effect.dwGain);
-		fprintf(debugFile, "- Flags: 0x%08X\n", effect.dwFlags);
+		// Get device capabilities for sample period
+		DIDEVCAPS deviceCaps = {};
+		deviceCaps.dwSize = sizeof(DIDEVCAPS);
 
-		HRESULT createResult = _ActiveDevices[GUIDString]->CreateEffect(
+		switch (effectType) {
+		case Effects::Type::ConstantForce:
+			constantForce = new DICONSTANTFORCE();
+			constantForce->lMagnitude = 0;
+			effect.cbTypeSpecificParams = sizeof(DICONSTANTFORCE);
+			effect.lpvTypeSpecificParams = constantForce;
+			LogMessage("CreateFFBEffect: Creating Constant Force effect");
+			break;
+
+		case Effects::Type::Spring:
+		case Effects::Type::Damper:
+		case Effects::Type::Friction:
+		case Effects::Type::Inertia:
+			conditions = new DICONDITION[FFBAxesCount];
+			ZeroMemory(conditions, sizeof(DICONDITION) * FFBAxesCount);
+			effect.cbTypeSpecificParams = sizeof(DICONDITION) * FFBAxesCount;
+			effect.lpvTypeSpecificParams = conditions;
+			LogMessage("CreateFFBEffect: Creating Condition effect (type %d)", static_cast<int>(effectType));
+			break;
+
+		case Effects::Type::Sine:
+		case Effects::Type::Square:
+		case Effects::Type::Triangle:
+		case Effects::Type::SawtoothUp:
+		case Effects::Type::SawtoothDown:
+			periodicForce = new DIPERIODIC();
+			ZeroMemory(periodicForce, sizeof(DIPERIODIC));
+			periodicForce->dwMagnitude = 0;
+			periodicForce->lOffset = 0;
+			periodicForce->dwPhase = 0;
+			periodicForce->dwPeriod = 30000;
+			effect.cbTypeSpecificParams = sizeof(DIPERIODIC);
+			effect.lpvTypeSpecificParams = periodicForce;
+			LogMessage("CreateFFBEffect: Creating Periodic effect (type %d)", static_cast<int>(effectType));
+			break;
+
+		case Effects::Type::RampForce:
+			rampForce = new DIRAMPFORCE();
+			ZeroMemory(rampForce, sizeof(DIRAMPFORCE));
+			rampForce->lStart = 0;
+			rampForce->lEnd = 0;
+			effect.cbTypeSpecificParams = sizeof(DIRAMPFORCE);
+			effect.lpvTypeSpecificParams = rampForce;
+			LogMessage("CreateFFBEffect: Creating Ramp Force effect");
+			break;
+
+		case Effects::Type::CustomForce:
+			customForce = new DICUSTOMFORCE();
+			hr = _ActiveDevices[GUIDString]->GetCapabilities(&deviceCaps);
+			if (FAILED(hr)) {
+				LogMessage("CreateFFBEffect: Failed to get device capabilities: 0x%08X", hr);
+				delete[] FFBAxes;
+				delete[] FFBDirections;
+				delete customForce;
+				return hr;
+			}
+
+			ZeroMemory(customForce, sizeof(DICUSTOMFORCE));
+			customForce->cChannels = FFBAxesCount;
+			customForce->dwSamplePeriod = deviceCaps.dwFFSamplePeriod;
+			customForce->cSamples = 2;
+
+			forceData = new LONG[customForce->cSamples];
+			forceData[0] = 0;
+			forceData[1] = 5000;
+			customForce->rglForceData = forceData;
+
+			effect.cbTypeSpecificParams = sizeof(DICUSTOMFORCE);
+			effect.lpvTypeSpecificParams = customForce;
+			effect.dwSamplePeriod = customForce->dwSamplePeriod;
+			LogMessage("CreateFFBEffect: Creating Custom Force effect");
+			break;
+
+		default:
+			LogMessage("CreateFFBEffect: Unsupported effect type: %d", static_cast<int>(effectType));
+			delete[] FFBAxes;
+			delete[] FFBDirections;
+			return E_INVALIDARG;
+		}
+
+		// Create the effect
+		hr = _ActiveDevices[GUIDString]->CreateEffect(
 			EffectTypeToGUID(effectType),
 			&effect,
 			&effectControl,
 			nullptr
 		);
 
-		fprintf(debugFile, "\nEffect Creation Result: 0x%08X\n", createResult);
-		if (FAILED(createResult)) {
-			fprintf(debugFile, "Failed to create custom force effect\n");
-		}
-
-		fclose(debugFile);
-		return createResult;
-		break;
-	}
-
-	default:
-		return E_FAIL; // Unsupported Effect
-	}
-
-
-	if (FAILED(hr = _ActiveDevices[GUIDString]->CreateEffect(EffectTypeToGUID(effectType), &effect, &effectControl, nullptr))) { return hr; }
-	if (FAILED(hr = effectControl->Start(1, 0))) { return hr; }
-	_DeviceFFBEffectConfig[GUIDString][effectType] = effect;
-	_DeviceFFBEffectControl[GUIDString][effectType] = effectControl;
-
-	return hr;
-}
-
-HRESULT DestroyFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
-	if (!guidInstance) return E_INVALIDARG;
-
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance);
-
-	// Validate device exists
-	if (!_ActiveDevices.contains(GUIDString)) {
-		return E_HANDLE;
-	}
-
-	// Validate effect control exists
-	if (!_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
-		return S_OK; // Already destroyed
-	}
-
-	// Get effect pointer
-	LPDIRECTINPUTEFFECT diEffect = _DeviceFFBEffectControl[GUIDString][effectType];
-	if (!diEffect) {
-		// Cleanup invalid state
-		_DeviceFFBEffectControl[GUIDString].erase(effectType);
-		_DeviceFFBEffectConfig[GUIDString].erase(effectType);
-		return E_POINTER;
-	}
-
-	try {
-		// Stop effect first
-		hr = diEffect->Stop();
 		if (FAILED(hr)) {
-			// Log error but continue cleanup
-			char buffer[256];
-			sprintf_s(buffer, "Failed to stop effect: 0x%08X\n", hr);
-			OutputDebugStringA(buffer);
+			LogMessage("CreateFFBEffect: Failed to create effect: 0x%08X", hr);
+
+			// Clean up resources
+			delete[] FFBAxes;
+			delete[] FFBDirections;
+
+			if (constantForce) delete constantForce;
+			if (conditions) delete[] conditions;
+			if (rampForce) delete rampForce;
+			if (periodicForce) delete periodicForce;
+			if (customForce) {
+				if (customForce->rglForceData) delete[] customForce->rglForceData;
+				delete customForce;
+			}
+
+			return hr;
 		}
 
-		// Unload effect resources
+		// Start the effect
+		hr = effectControl->Start(1, 0);
+		if (FAILED(hr)) {
+			LogMessage("CreateFFBEffect: Failed to start effect: 0x%08X", hr);
+			effectControl->Release();
+
+			// Clean up resources
+			delete[] FFBAxes;
+			delete[] FFBDirections;
+
+			if (constantForce) delete constantForce;
+			if (conditions) delete[] conditions;
+			if (rampForce) delete rampForce;
+			if (periodicForce) delete periodicForce;
+			if (customForce) {
+				if (customForce->rglForceData) delete[] customForce->rglForceData;
+				delete customForce;
+			}
+
+			return hr;
+		}
+
+		// Store the effect configuration and control
+		_DeviceFFBEffectConfig[GUIDString][effectType] = effect;
+		_DeviceFFBEffectControl[GUIDString][effectType] = effectControl;
+
+		LogMessage("CreateFFBEffect: Effect created and started successfully");
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("CreateFFBEffect: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("CreateFFBEffect: Unknown exception");
+		return E_FAIL;
+	}
+}
+DIRECTINPUTFORCEFEEDBACK_API HRESULT DestroyFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
+	try {
+		if (!guidInstance) {
+			LogMessage("DestroyFFBEffect: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("DestroyFFBEffect: Device not found");
+			return E_HANDLE;
+		}
+
+		if (!_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
+			LogMessage("DestroyFFBEffect: Effect not found (already destroyed)");
+			return S_OK;
+		}
+
+		LPDIRECTINPUTEFFECT diEffect = _DeviceFFBEffectControl[GUIDString][effectType];
+		if (!diEffect) {
+			LogMessage("DestroyFFBEffect: Effect control is null");
+			_DeviceFFBEffectControl[GUIDString].erase(effectType);
+			_DeviceFFBEffectConfig[GUIDString].erase(effectType);
+			return E_POINTER;
+		}
+
+		// Stop the effect
+		HRESULT hr = diEffect->Stop();
+		if (FAILED(hr)) {
+			LogMessage("DestroyFFBEffect: Failed to stop effect: 0x%08X", hr);
+			// Continue anyway
+		}
+
+		// Unload the effect
 		hr = diEffect->Unload();
 		if (FAILED(hr)) {
-			char buffer[256];
-			sprintf_s(buffer, "Failed to unload effect: 0x%08X\n", hr);
-			OutputDebugStringA(buffer);
+			LogMessage("DestroyFFBEffect: Failed to unload effect: 0x%08X", hr);
+			// Continue anyway
 		}
 
-		// Release the effect interface
+		// Release the effect
 		ULONG refCount = diEffect->Release();
 		if (refCount > 0) {
-			char buffer[256];
-			sprintf_s(buffer, "Warning: Effect released but refCount = %lu\n", refCount);
-			OutputDebugStringA(buffer);
+			LogMessage("DestroyFFBEffect: Warning: Effect released but refCount = %lu", refCount);
 		}
 
 		// Clean up maps
 		_DeviceFFBEffectControl[GUIDString].erase(effectType);
 		_DeviceFFBEffectConfig[GUIDString].erase(effectType);
 
+		LogMessage("DestroyFFBEffect: Effect destroyed successfully");
 		return S_OK;
 	}
+	catch (const std::exception& e) {
+		LogMessage("DestroyFFBEffect: Exception: %s", e.what());
+		return E_FAIL;
+	}
 	catch (...) {
-		// Ensure maps are cleaned even on error
-		_DeviceFFBEffectControl[GUIDString].erase(effectType);
-		_DeviceFFBEffectConfig[GUIDString].erase(effectType);
+		LogMessage("DestroyFFBEffect: Unknown exception");
 		return E_FAIL;
 	}
 }
 
-HRESULT UpdateFFBEffect(LPCSTR guidInstance, Effects::Type effectType, DICONDITION* conditions) {
-	if (!guidInstance || !conditions) return E_INVALIDARG;
-
-	HRESULT hr = E_FAIL;
-	std::string GUIDString(guidInstance);
-
-	// Validate device and effect existence
-	if (!_ActiveDevices.contains(GUIDString)) return E_FAIL;
-	if (!_DeviceFFBEffectControl[GUIDString].contains(effectType)) return E_ABORT;
-
-	// Get effect configuration
-	auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][effectType];
-
-	for (DWORD idx = 0; idx < effectConfig.cAxes; idx++) {
-		switch (effectType) {
-		case Effects::Type::ConstantForce: {
-			auto* cf = static_cast<DICONSTANTFORCE*>(effectConfig.lpvTypeSpecificParams);
-			if (!cf) return E_POINTER;
-			cf->lMagnitude = conditions[idx].lPositiveCoefficient;
-			break;
+DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateFFBEffect(LPCSTR guidInstance, Effects::Type effectType, DICONDITION* conditions) {
+	try {
+		if (!guidInstance || !conditions) {
+			LogMessage("UpdateFFBEffect: Invalid parameters");
+			return E_INVALIDARG;
 		}
 
-		case Effects::Type::Sine:
-		case Effects::Type::Square:
-		case Effects::Type::Triangle:
-		case Effects::Type::SawtoothUp:
-		case Effects::Type::SawtoothDown: {
-			auto* pe = static_cast<DIPERIODIC*>(effectConfig.lpvTypeSpecificParams);
-			if (!pe) return E_POINTER;
-			pe->dwMagnitude = conditions[idx].lPositiveCoefficient;
-			pe->lOffset = conditions[idx].lOffset;
-			pe->dwPeriod = conditions[idx].dwPositiveSaturation;
-			// Maintain existing phase values
-			break;
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("UpdateFFBEffect: Device not found");
+			return E_FAIL;
 		}
-		case Effects::Type::RampForce: {
-			auto* rf = static_cast<DIRAMPFORCE*>(effectConfig.lpvTypeSpecificParams);
-			if (!rf) return E_POINTER;
-			rf->lStart = conditions[idx].lPositiveCoefficient;
-			rf->lEnd = conditions[idx].lNegativeCoefficient;
-			break;
+
+		if (!_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
+			LogMessage("UpdateFFBEffect: Effect not found");
+			return E_ABORT;
 		}
-		default: {
-			auto* cond = static_cast<DICONDITION*>(effectConfig.lpvTypeSpecificParams);
-			if (!cond) return E_POINTER;
-			cond[idx].lOffset = conditions[idx].lOffset;
-			cond[idx].lPositiveCoefficient = conditions[idx].lPositiveCoefficient;
-			cond[idx].lNegativeCoefficient = conditions[idx].lNegativeCoefficient;
-			cond[idx].dwPositiveSaturation = conditions[idx].dwPositiveSaturation;
-			cond[idx].dwNegativeSaturation = conditions[idx].dwNegativeSaturation;
-			cond[idx].lDeadBand = conditions[idx].lDeadBand;
-			break;
+
+		auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][effectType];
+
+		for (DWORD idx = 0; idx < effectConfig.cAxes; idx++) {
+			switch (effectType) {
+			case Effects::Type::ConstantForce: {
+				auto* cf = static_cast<DICONSTANTFORCE*>(effectConfig.lpvTypeSpecificParams);
+				if (!cf) {
+					LogMessage("UpdateFFBEffect: Invalid constant force parameters");
+					return E_POINTER;
+				}
+				cf->lMagnitude = conditions[idx].lPositiveCoefficient;
+				break;
+			}
+			case Effects::Type::Sine:
+			case Effects::Type::Square:
+			case Effects::Type::Triangle:
+			case Effects::Type::SawtoothUp:
+			case Effects::Type::SawtoothDown: {
+				auto* pe = static_cast<DIPERIODIC*>(effectConfig.lpvTypeSpecificParams);
+				if (!pe) {
+					LogMessage("UpdateFFBEffect: Invalid periodic parameters");
+					return E_POINTER;
+				}
+				pe->dwMagnitude = conditions[idx].lPositiveCoefficient;
+				pe->lOffset = conditions[idx].lOffset;
+				pe->dwPeriod = conditions[idx].dwPositiveSaturation;
+				break;
+			}
+			case Effects::Type::RampForce: {
+				auto* rf = static_cast<DIRAMPFORCE*>(effectConfig.lpvTypeSpecificParams);
+				if (!rf) {
+					LogMessage("UpdateFFBEffect: Invalid ramp force parameters");
+					return E_POINTER;
+				}
+				rf->lStart = conditions[idx].lPositiveCoefficient;
+				rf->lEnd = conditions[idx].lNegativeCoefficient;
+				break;
+			}
+			default: {
+				auto* cond = static_cast<DICONDITION*>(effectConfig.lpvTypeSpecificParams);
+				if (!cond) {
+					LogMessage("UpdateFFBEffect: Invalid condition parameters");
+					return E_POINTER;
+				}
+				cond[idx].lOffset = conditions[idx].lOffset;
+				cond[idx].lPositiveCoefficient = conditions[idx].lPositiveCoefficient;
+				cond[idx].lNegativeCoefficient = conditions[idx].lNegativeCoefficient;
+				cond[idx].dwPositiveSaturation = conditions[idx].dwPositiveSaturation;
+				cond[idx].dwNegativeSaturation = conditions[idx].dwNegativeSaturation;
+				cond[idx].lDeadBand = conditions[idx].lDeadBand;
+				break;
+			}
+			}
 		}
+
+		// Update the effect parameters
+		HRESULT hr = _DeviceFFBEffectControl[GUIDString][effectType]->SetParameters(
+			&effectConfig, DIEP_TYPESPECIFICPARAMS
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("UpdateFFBEffect: Failed to update effect parameters: 0x%08X", hr);
+			return hr;
 		}
+
+		LogMessage("UpdateFFBEffect: Effect updated successfully");
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("UpdateFFBEffect: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("UpdateFFBEffect: Unknown exception");
+		return E_FAIL;
+	}
+}
+DIRECTINPUTFORCEFEEDBACK_API HRESULT StopAllFFBEffects(LPCSTR guidInstance) {
+	try {
+		if (!guidInstance) {
+			LogMessage("StopAllFFBEffects: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("StopAllFFBEffects: Device not found");
+			return E_FAIL;
+		}
+
+		HRESULT hr = S_OK;
+
+		// Explicitly destroy each supported effect type
+		DestroyFFBEffect(guidInstance, Effects::Type::ConstantForce);
+		DestroyFFBEffect(guidInstance, Effects::Type::RampForce);
+		DestroyFFBEffect(guidInstance, Effects::Type::Square);
+		DestroyFFBEffect(guidInstance, Effects::Type::Sine);
+		DestroyFFBEffect(guidInstance, Effects::Type::Triangle);
+		DestroyFFBEffect(guidInstance, Effects::Type::SawtoothUp);
+		DestroyFFBEffect(guidInstance, Effects::Type::SawtoothDown);
+		DestroyFFBEffect(guidInstance, Effects::Type::Spring);
+		DestroyFFBEffect(guidInstance, Effects::Type::Damper);
+		DestroyFFBEffect(guidInstance, Effects::Type::Inertia);
+		DestroyFFBEffect(guidInstance, Effects::Type::Friction);
+		DestroyFFBEffect(guidInstance, Effects::Type::CustomForce);
+
+		LogMessage("StopAllFFBEffects: All effects stopped");
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("StopAllFFBEffects: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("StopAllFFBEffects: Unknown exception");
+		return E_FAIL;
+	}
+}
+
+DIRECTINPUTFORCEFEEDBACK_API void SetDeviceChangeCallback(DeviceChangeCallback CB) {
+	g_deviceCallback = CB;
+	LogMessage("SetDeviceChangeCallback: Callback set");
+}
+
+// State query functions
+DIRECTINPUTFORCEFEEDBACK_API bool IsUnityInitialized() {
+	return g_UnityInitialized;
+}
+
+DIRECTINPUTFORCEFEEDBACK_API bool IsDirectInputInitialized() {
+	return _DirectInput != nullptr;
+}
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDILastError(char* buffer, int bufferSize) {
+	if (!buffer || bufferSize <= 0) {
+		return E_INVALIDARG;
 	}
 
-	// Update effect parameters
-	return _DeviceFFBEffectControl[GUIDString][effectType]->SetParameters(
-		&effectConfig,
-		DIEP_TYPESPECIFICPARAMS
-	);
+	if (g_LastErrorMessage.empty()) {
+		strncpy_s(buffer, bufferSize, "No error", _TRUNCATE);
+	}
+	else {
+		strncpy_s(buffer, bufferSize, g_LastErrorMessage.c_str(), _TRUNCATE);
+	}
+
+	return S_OK;
 }
 
-HRESULT StopAllFFBEffects(LPCSTR guidInstance) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
-	hr = S_OK; // Incase there are no active effects, act like we stopped them all
+// Generate SAFEARRAY of DEBUG data with comprehensive FFB information
+DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** DebugData) {
+	try {
+		HRESULT hr = E_FAIL;
+		std::vector<std::wstring> debugInfo;
 
-	//for (auto& [effectType, effectControl] : _DeviceFFBEffectControl[GUIDString]) { // For each effect
-	//  if (FAILED(hr = effectControl->Stop())) { return hr; } // Stop Effect
-	//  //_DeviceFFBEffectControl[GUIDString].erase(effectType);        // Remove Effect Control        // effectType isn't behaving like Effects::Type, "An unhandled exception of type 'System.AccessViolationException' occurred in DirectInputExplorer.dll" "Attempted to read or write protected memory. This is often an indication that other memory is corrupt."
-	//  //_DeviceFFBEffectConfig[GUIDString].erase(effectType);         // Remove Effect Config
-	//}
+		// Header and timestamp
+		debugInfo.push_back(L"=== DirectInput Force Feedback Debug Information ===");
+		SYSTEMTIME st;
+		GetLocalTime(&st);
+		wchar_t timeStr[100];
+		swprintf_s(timeStr, L"Timestamp: %04d-%02d-%02d %02d:%02d:%02d.%03d",
+			st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+		debugInfo.push_back(timeStr);
 
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::ConstantForce);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::RampForce);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Square);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Sine);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Triangle);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::SawtoothUp);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::SawtoothDown);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Spring);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Damper);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Inertia);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::Friction);
-	hr = DestroyFFBEffect(guidInstance, Effects::Type::CustomForce);
+		// Unity and DirectInput status
+		debugInfo.push_back(L"Unity Status: " + std::wstring(g_UnityInitialized ? L"Initialized" : L"Not Initialized"));
+		debugInfo.push_back(L"DirectInput Status: " + std::wstring(_DirectInput ? L"Initialized" : L"Not Initialized"));
 
-	return hr;
-}
+		if (!guidInstance) {
+			debugInfo.push_back(L"ERROR: Invalid GUID (null)");
+			hr = BuildSafeArray(debugInfo, DebugData);
+			return hr;
+		}
 
-void SetDeviceChangeCallback(DeviceChangeCallback CB) {
-	g_deviceCallback = CB;
-}
+		std::string GUIDString(guidInstance);
+		debugInfo.push_back(L"Device GUID: " + string_to_wstring(GUIDString));
 
-// Generate SAFEARRAY of DEBUG data
-HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** DebugData) {
-	HRESULT hr = E_FAIL;
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return hr; // Device not attached, fail
+		// Check if the device is active
+		if (!_ActiveDevices.contains(GUIDString)) {
+			debugInfo.push_back(L"ERROR: Device not attached or not active");
+			hr = BuildSafeArray(debugInfo, DebugData);
+			return hr;
+		}
 
-	//std::vector<std::wstring> SAData;
+		// Get device capabilities
+		DIDEVCAPS deviceCaps = {};
+		deviceCaps.dwSize = sizeof(DIDEVCAPS);
+		hr = _ActiveDevices[GUIDString]->GetCapabilities(&deviceCaps);
+		if (SUCCEEDED(hr)) {
+			debugInfo.push_back(L"Device Capabilities:");
+			debugInfo.push_back(L"  - Type: 0x" + std::to_wstring(deviceCaps.dwDevType));
+			debugInfo.push_back(L"  - Axes: " + std::to_wstring(deviceCaps.dwAxes));
+			debugInfo.push_back(L"  - Buttons: " + std::to_wstring(deviceCaps.dwButtons));
+			debugInfo.push_back(L"  - POVs: " + std::to_wstring(deviceCaps.dwPOVs));
+			debugInfo.push_back(L"  - FFB Sample Period: " + std::to_wstring(deviceCaps.dwFFSamplePeriod) + L" microseconds");
+			debugInfo.push_back(L"  - FFB Min Time Resolution: " + std::to_wstring(deviceCaps.dwFFMinTimeResolution) + L" microseconds");
+		}
+		else {
+			debugInfo.push_back(L"ERROR: Failed to get device capabilities - 0x" + std::to_wstring(hr));
+		}
 
-	//SAData.push_back(L"Modifying Constant Force!");
-	//DICONSTANTFORCE CF = { 1000 };
-	//_DeviceFFBEffectConfig[GUIDString][Effects::ConstantForce].lpvTypeSpecificParams = &CF;
-	//_DeviceFFBEffectControl[GUIDString][Effects::ConstantForce]->SetParameters(&_DeviceFFBEffectConfig[GUIDString][Effects::ConstantForce], DIEP_TYPESPECIFICPARAMS);
-	//hr = BuildSafeArray(SAData, DebugData);
+		// Enumerate FFB axes
+		debugInfo.push_back(L"Force Feedback Axes:");
+		if (!_DeviceFFBAxes.contains(GUIDString)) {
+			_DeviceFFBAxes[GUIDString].clear();
+			hr = _ActiveDevices[GUIDString]->EnumObjects(&_EnumFFBAxisCallback, &GUIDString, DIEFT_ALL);
+		}
 
+		if (_DeviceFFBAxes[GUIDString].empty()) {
+			debugInfo.push_back(L"  - No FFB axes found");
+		}
+		else {
+			debugInfo.push_back(L"  - Found " + std::to_wstring(_DeviceFFBAxes[GUIDString].size()) + L" FFB axes");
+			for (const auto& axis : _DeviceFFBAxes[GUIDString]) {
+				wchar_t guidStr[64] = { 0 };
+				StringFromGUID2(axis.guidType, guidStr, 64);
+				debugInfo.push_back(L"  - Axis: " + std::wstring(axis.tszName) + L" (GUID: " + guidStr + L")");
+			}
+		}
 
+		// Check for active FFB effects
+		debugInfo.push_back(L"Active Force Feedback Effects:");
+		if (!_DeviceFFBEffectControl[GUIDString].empty()) {
+			debugInfo.push_back(L"  - Found " + std::to_wstring(_DeviceFFBEffectControl[GUIDString].size()) + L" active effects");
 
-	// Testing Fanatec Fix
-	LPDIRECTINPUTDEVICE8 DIDevice = nullptr;
-	if (FAILED(hr = _DirectInput->CreateDevice(LPCSTRGUIDtoGUID(guidInstance), &DIDevice, NULL))) {
+			// Focus on Constant Force effect
+			if (_DeviceFFBEffectControl[GUIDString].contains(Effects::Type::ConstantForce)) {
+				debugInfo.push_back(L"  - Constant Force effect is active");
+				auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][Effects::Type::ConstantForce];
+
+				debugInfo.push_back(L"    Effect Configuration:");
+				debugInfo.push_back(L"    - Duration: " + (effectConfig.dwDuration == INFINITE ?
+					std::wstring(L"INFINITE") : std::to_wstring(effectConfig.dwDuration)));
+				debugInfo.push_back(L"    - Gain: " + std::to_wstring(effectConfig.dwGain));
+				debugInfo.push_back(L"    - Sample Period: " + std::to_wstring(effectConfig.dwSamplePeriod));
+				debugInfo.push_back(L"    - Axes Count: " + std::to_wstring(effectConfig.cAxes));
+
+				// Extract and display constant force parameters
+				auto* cf = static_cast<DICONSTANTFORCE*>(effectConfig.lpvTypeSpecificParams);
+				if (cf) {
+					debugInfo.push_back(L"    Constant Force Parameters:");
+					debugInfo.push_back(L"    - Magnitude: " + std::to_wstring(cf->lMagnitude) +
+						L" (" + std::to_wstring((cf->lMagnitude * 100) / DI_FFNOMINALMAX) + L"%)");
+				}
+				else {
+					debugInfo.push_back(L"    ERROR: Invalid constant force parameters");
+				}
+
+				// Test modifying the constant force
+				debugInfo.push_back(L"Testing Constant Force Modification:");
+				try {
+					// Save original magnitude
+					LONG originalMagnitude = 0;
+					if (cf) originalMagnitude = cf->lMagnitude;
+
+					// Set to 50% force
+					LONG testMagnitude = DI_FFNOMINALMAX / 2;
+					debugInfo.push_back(L"  - Setting magnitude to 50%: " + std::to_wstring(testMagnitude));
+
+					if (cf) {
+						cf->lMagnitude = testMagnitude;
+						hr = _DeviceFFBEffectControl[GUIDString][Effects::Type::ConstantForce]->SetParameters(
+							&effectConfig, DIEP_TYPESPECIFICPARAMS);
+
+						if (SUCCEEDED(hr)) {
+							debugInfo.push_back(L"  - Successfully applied 50% force");
+						}
+						else {
+							debugInfo.push_back(L"  - Failed to apply 50% force - 0x" + std::to_wstring(hr));
+						}
+
+						// Restore original magnitude
+						cf->lMagnitude = originalMagnitude;
+						hr = _DeviceFFBEffectControl[GUIDString][Effects::Type::ConstantForce]->SetParameters(
+							&effectConfig, DIEP_TYPESPECIFICPARAMS);
+
+						if (SUCCEEDED(hr)) {
+							debugInfo.push_back(L"  - Successfully restored original force");
+						}
+						else {
+							debugInfo.push_back(L"  - Failed to restore original force - 0x" + std::to_wstring(hr));
+						}
+					}
+				}
+				catch (...) {
+					debugInfo.push_back(L"  - Exception occurred during force modification test");
+				}
+			}
+			else {
+				debugInfo.push_back(L"  - Constant Force effect is not active");
+			}
+		}
+		else {
+			debugInfo.push_back(L"  - No active effects found");
+		}
+
+		// Get device path information
+		debugInfo.push_back(L"Device Path Information:");
+		LPDIRECTINPUTDEVICE8 DIDevice = nullptr;
+		if (SUCCEEDED(hr = _DirectInput->CreateDevice(LPCSTRGUIDtoGUID(guidInstance), &DIDevice, NULL))) {
+			DIPROPGUIDANDPATH GUIDPath = {};
+			GUIDPath.diph.dwSize = sizeof(DIPROPGUIDANDPATH);
+			GUIDPath.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+			GUIDPath.diph.dwObj = 0;
+			GUIDPath.diph.dwHow = static_cast<DWORD>(DIPH_DEVICE);
+
+			if (SUCCEEDED(hr = DIDevice->GetProperty(DIPROP_GUIDANDPATH, &GUIDPath.diph))) {
+				debugInfo.push_back(L"  - Path: " + std::wstring(GUIDPath.wszPath));
+
+				// Check for Fanatec duplicate markers
+				if (wcsstr(GUIDPath.wszPath, L"&col01") != 0) {
+					debugInfo.push_back(L"  - This is a primary Fanatec device (contains &col01)");
+				}
+				else if (wcsstr(GUIDPath.wszPath, L"&col02") != 0) {
+					debugInfo.push_back(L"  - This is a duplicate Fanatec device (contains &col02)");
+				}
+			}
+			else {
+				debugInfo.push_back(L"  - Failed to get device path - 0x" + std::to_wstring(hr));
+			}
+
+			DIDevice->Release();
+		}
+		else {
+			debugInfo.push_back(L"  - Failed to create temporary device - 0x" + std::to_wstring(hr));
+		}
+
+		// Store the debug data
+		DEBUGDATA.clear();
+		for (const auto& line : debugInfo) {
+			DEBUGDATA.push_back(line);
+		}
+
+		// Build and return the SAFEARRAY
+		hr = BuildSafeArray(DEBUGDATA, DebugData);
 		return hr;
-	} // L"CreateDevice failed! 0x%08x", hr
-
-	DIPROPGUIDANDPATH GUIDPath = {};
-	GUIDPath.diph.dwSize = sizeof(DIPROPGUIDANDPATH);
-	GUIDPath.diph.dwHeaderSize = sizeof(DIPROPHEADER);
-	GUIDPath.diph.dwObj = 0;
-	GUIDPath.diph.dwHow = static_cast<DWORD>(DIPH_DEVICE); // Explicit cast to DWORD
-	if (FAILED(hr = DIDevice->GetProperty(DIPROP_GUIDANDPATH, &GUIDPath.diph))) {
-		DIDevice->Release();
-		return hr;
-	} // L"GetProperty failed! Failed to get symbolic path for device 0x%08x", hr
-	DIDevice->Release();
-
-	//if (wcsstr(GUIDPath.wszPath, L"&col01") != 0) { // This is our primary device (HID Path contains "&col01")
-	//  return false;
-	//}
-	//else {
-	//  return true; // This is a duplicate device
-	//}
-	DEBUGDATA.push_back(GUIDPath.wszPath);
-
-
-	hr = BuildSafeArray(DEBUGDATA, DebugData);
-	return hr;
+	}
+	catch (const std::exception& e) {
+		LogMessage("DEBUG1: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("DEBUG1: Unknown exception");
+		return E_FAIL;
+	}
 }
-
-
 //////////////////////////////////////////////////////////////
 // Callback Functions
 //////////////////////////////////////////////////////////////
 
-// Callback for each device enumerated, each device is added to the _DeviceInstances vector
 BOOL CALLBACK _EnumDevicesCallback(const DIDEVICEINSTANCE* DIDI, void* pContext) {
-	DeviceInfo di = { 0 }; // Store DeviceInfo
-	di.deviceType = DIDI->dwDevType;
-	std::string GIStr = (GUID_to_string(DIDI->guidInstance).c_str());
-	std::string GPStr = (GUID_to_string(DIDI->guidProduct).c_str());
-	std::string INStr = (wstring_to_string(DIDI->tszInstanceName).c_str());
-	std::string PNStr = (wstring_to_string(DIDI->tszProductName).c_str());
-	di.guidInstance = new char[GIStr.length() + 1];
-	di.guidProduct = new char[GPStr.length() + 1];
-	di.instanceName = new char[INStr.length() + 1];
-	di.productName = new char[PNStr.length() + 1];
-	strcpy_s(di.guidInstance, GIStr.length() + 1, GIStr.c_str());
-	strcpy_s(di.guidProduct, GPStr.length() + 1, GPStr.c_str());
-	strcpy_s(di.instanceName, INStr.length() + 1, INStr.c_str());
-	strcpy_s(di.productName, PNStr.length() + 1, PNStr.c_str());
-	di.FFBCapable = false; // Default all devices to false, FFB devices are updated later
+	try {
+		DeviceInfo di = { 0 };
+		di.deviceType = DIDI->dwDevType;
+		std::string GIStr = GUID_to_string(DIDI->guidInstance);
+		std::string GPStr = GUID_to_string(DIDI->guidProduct);
+		std::string INStr = wstring_to_string(DIDI->tszInstanceName);
+		std::string PNStr = wstring_to_string(DIDI->tszProductName);
 
-	// Fanatec Fix (Fanatec devices enumerate as 2)
-	if (LOWORD(DIDI->guidProduct.Data1) == 0x0EB7) // Fanatec manufacturer ID
-		if (IsDuplicateHID(DIDI)) { return DIENUM_CONTINUE; } // Skip if duplicate
+		di.guidInstance = new char[GIStr.length() + 1];
+		di.guidProduct = new char[GPStr.length() + 1];
+		di.instanceName = new char[INStr.length() + 1];
+		di.productName = new char[PNStr.length() + 1];
+		strcpy_s(di.guidInstance, GIStr.length() + 1, GIStr.c_str());
+		strcpy_s(di.guidProduct, GPStr.length() + 1, GPStr.c_str());
+		strcpy_s(di.instanceName, INStr.length() + 1, INStr.c_str());
+		strcpy_s(di.productName, PNStr.length() + 1, PNStr.c_str());
+		di.FFBCapable = false; // Default to false; will be updated later.
 
-	_DeviceInstances.push_back(di);
-	return DIENUM_CONTINUE;
+		// Fanatec devices fix: skip duplicate HID if applicable.
+		if (LOWORD(DIDI->guidProduct.Data1) == 0x0EB7) {
+			if (IsDuplicateHID(DIDI)) {
+				LogMessage("_EnumDevicesCallback: Skipping duplicate Fanatec device: %s", INStr.c_str());
+				return DIENUM_CONTINUE;
+			}
+		}
+
+		_DeviceInstances.push_back(di);
+		LogMessage("_EnumDevicesCallback: Found device: %s", INStr.c_str());
+		return DIENUM_CONTINUE;
+	}
+	catch (const std::exception& e) {
+		LogMessage("_EnumDevicesCallback: Exception: %s", e.what());
+		return DIENUM_STOP;
+	}
+	catch (...) {
+		LogMessage("_EnumDevicesCallback: Unknown exception");
+		return DIENUM_STOP;
+	}
 }
 
-// Callback for each device enumerated, each device is added to the _DeviceInstances vector
 BOOL CALLBACK _EnumDevicesCallbackFFB(const DIDEVICEINSTANCE* DIDI, void* pContext) {
-	std::string GUIDStr = (GUID_to_string(DIDI->guidInstance).c_str()); // Convert GUID to str to compare against
-	for (auto& di : _DeviceInstances) {
-		if (di.guidInstance == GUIDStr) { // Update existing entry
-			di.FFBCapable = true;
+	try {
+		std::string GUIDStr = GUID_to_string(DIDI->guidInstance);
+		for (auto& di : _DeviceInstances) {
+			if (di.guidInstance == GUIDStr) {
+				di.FFBCapable = true;
+				LogMessage("_EnumDevicesCallbackFFB: Device %s is FFB capable", di.instanceName);
+			}
 		}
+		return DIENUM_CONTINUE;
 	}
-	return DIENUM_CONTINUE;
+	catch (const std::exception& e) {
+		LogMessage("_EnumDevicesCallbackFFB: Exception: %s", e.what());
+		return DIENUM_STOP;
+	}
+	catch (...) {
+		LogMessage("_EnumDevicesCallbackFFB: Unknown exception");
+		return DIENUM_STOP;
+	}
 }
 
 BOOL CALLBACK _EnumFFBEffectsCallback(LPCDIEFFECTINFO EffectInfo, LPVOID pvRef) {
-	std::string GUIDString = *reinterpret_cast<std::string*>(pvRef); // Device GUID passed in as 2nd arg
-	_DeviceEnumeratedEffects[GUIDString].push_back(*EffectInfo); // Add the DIEffectInfo to the entry for this Device
-	return DIENUM_CONTINUE; // Continue to next effect
+	try {
+		std::string GUIDString = *reinterpret_cast<std::string*>(pvRef);
+		_DeviceEnumeratedEffects[GUIDString].push_back(*EffectInfo);
+		LogMessage("_EnumFFBEffectsCallback: Found effect: %S", EffectInfo->tszName);
+		return DIENUM_CONTINUE;
+	}
+	catch (const std::exception& e) {
+		LogMessage("_EnumFFBEffectsCallback: Exception: %s", e.what());
+		return DIENUM_STOP;
+	}
+	catch (...) {
+		LogMessage("_EnumFFBEffectsCallback: Unknown exception");
+		return DIENUM_STOP;
+	}
 }
 
 BOOL CALLBACK _EnumFFBAxisCallback(const DIDEVICEOBJECTINSTANCE* ObjectInst, LPVOID pvRef) {
-	std::string GUIDString = *reinterpret_cast<std::string*>(pvRef); // Device GUID passed in as 2nd arg
-
-	if ((ObjectInst->dwFlags & DIDOI_FFACTUATOR) != 0) { // FFB Axis
-		_DeviceFFBAxes[GUIDString].push_back(*ObjectInst); // Add this ObjectIntance to the vector for this Device
+	try {
+		std::string GUIDString = *reinterpret_cast<std::string*>(pvRef);
+		if ((ObjectInst->dwFlags & DIDOI_FFACTUATOR) != 0) {
+			_DeviceFFBAxes[GUIDString].push_back(*ObjectInst);
+			LogMessage("_EnumFFBAxisCallback: Found FFB axis: %S", ObjectInst->tszName);
+		}
+		return DIENUM_CONTINUE;
 	}
-
-	return DIENUM_CONTINUE;
+	catch (const std::exception& e) {
+		LogMessage("_EnumFFBAxisCallback: Exception: %s", e.what());
+		return DIENUM_STOP;
+	}
+	catch (...) {
+		LogMessage("_EnumFFBAxisCallback: Unknown exception");
+		return DIENUM_STOP;
+	}
 }
 
 LRESULT _WindowsHookCallback(int code, WPARAM wParam, LPARAM lParam) {
-	if (code < 0) return CallNextHookEx(NULL, code, wParam, lParam);
+	if (code < 0)
+		return CallNextHookEx(NULL, code, wParam, lParam);
 
-	PCWPSTRUCT pMsg = PCWPSTRUCT(lParam);
-	if (pMsg->message == WM_DEVICECHANGE) {
-		if (g_deviceCallback) {
-			g_deviceCallback(static_cast<DBTEvents>(pMsg->wParam));
+	try {
+		PCWPSTRUCT pMsg = (PCWPSTRUCT)lParam;
+		if (pMsg->message == WM_DEVICECHANGE) {
+			LogMessage("_WindowsHookCallback: Device change detected, wParam: 0x%08X", pMsg->wParam);
+			if (g_deviceCallback) {
+				g_deviceCallback(static_cast<DBTEvents>(pMsg->wParam));
+			}
 		}
+		return CallNextHookEx(NULL, code, wParam, lParam);
 	}
-	return CallNextHookEx(NULL, code, wParam, lParam);
+	catch (...) {
+		LogMessage("_WindowsHookCallback: Exception in hook callback");
+		return CallNextHookEx(NULL, code, wParam, lParam);
+	}
 }
-
 
 //////////////////////////////////////////////////////////////
 // Helper Functions
 //////////////////////////////////////////////////////////////
 
-// Generate SAFEARRAY from vector of wstrings, useful for exporing data across interop boundary
-HRESULT BuildSafeArray(std::vector<std::wstring> sourceData, /*[out]*/ SAFEARRAY** SafeArrayData) {
+HRESULT BuildSafeArray(std::vector<std::wstring> sourceData, SAFEARRAY** SafeArrayData) {
 	HRESULT hr = E_FAIL;
 	try {
-		// Build the destination SAFEARRAY from the source data
 		const LONG dataEntries = static_cast<LONG>(sourceData.size());
-		CComSafeArray<BSTR> SAFEARRAY(dataEntries);
+		CComSafeArray<BSTR> safeArray(dataEntries);
 		for (LONG i = 0; i < dataEntries; i++) {
-			CComBSTR bstr = ToBstr(sourceData[i]); // Create a BSTR from the std::wstring
-			if (FAILED(hr = SAFEARRAY.SetAt(i, bstr.Detach(), FALSE))) { AtlThrow(hr); } // Move the BSTR into the safe array
+			CComBSTR bstr = ToBstr(sourceData[i]);
+			if (FAILED(hr = safeArray.SetAt(i, bstr.Detach(), FALSE))) {
+				LogMessage("BuildSafeArray: Failed to set array element: 0x%08X", hr);
+				AtlThrow(hr);
+			}
 		}
-
-		// Return the safe array to the caller (transfer ownership)
-		*SafeArrayData = SAFEARRAY.Detach();
+		*SafeArrayData = safeArray.Detach();
+		return S_OK;
 	}
 	catch (const CAtlException& e) {
-		hr = e;
+		LogMessage("BuildSafeArray: CAtlException: 0x%08X", static_cast<HRESULT>(e));
+		return e;
 	}
-	catch (const std::exception&) {
-		hr = E_FAIL;
+	catch (const std::exception& e) {
+		LogMessage("BuildSafeArray: Exception: %s", e.what());
+		return E_FAIL;
 	}
-
-	return hr;
+	catch (...) {
+		LogMessage("BuildSafeArray: Unknown exception");
+		return E_FAIL;
+	}
 }
 
-// Utilities for converting string types ( https://stackoverflow.com/a/3999597/3055031 )
-// Convert a wide Unicode string to an UTF8 string
-
-// Convert an UTF8 string to a wide Unicode String
 std::wstring string_to_wstring(const std::string& str) {
 	if (str.empty()) return std::wstring();
-	int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
 	std::wstring wstrTo(size_needed, 0);
-	MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+	MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstrTo[0], size_needed);
 	return wstrTo;
 }
 
 std::string wstring_to_string(const std::wstring& wstr) {
 	if (wstr.empty()) return std::string();
-	int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+	int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
 	std::string strTo(size_needed, 0);
-	WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+	WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
 	return strTo;
 }
 
-// Convert a GUID to a String
 std::string GUID_to_string(GUID guidInstance) {
 	OLECHAR* guidSTR;
-	(void)StringFromCLSID(guidInstance, &guidSTR);
-	return wstring_to_string(guidSTR);
-}
+	HRESULT hr = StringFromCLSID(guidInstance, &guidSTR);
+	if (FAILED(hr)) {
+		LogMessage("GUID_to_string: StringFromCLSID failed: 0x%08X", hr);
+		return "";
+	}
 
-// Return window handle for specified PID
-HWND FindMainWindow(unsigned long process_id) {
-	WindowData data = {};
-	data.process_id = process_id;
-	data.window_handle = 0;
-	EnumWindows(_EnumWindowsCallback, (LPARAM)&data);
-	return data.window_handle;
-}
-
-// Callback to find the main window when Enumerating windows of PID
-BOOL CALLBACK _EnumWindowsCallback(HWND handle, LPARAM lParam) {
-	WindowData& data = *(WindowData*)lParam; // Pointer to our original WindowData data object
-	unsigned long process_id = 0; // Store PID
-	GetWindowThreadProcessId(handle, &process_id); // Get PID of our handle (Window in callback)
-	if (data.process_id != process_id || !IsMainWindow(handle))
-		return TRUE;
-	data.window_handle = handle; // This is the main window, set the WindowData handle
-	return FALSE;
-}
-
-// True if the handle is for the main window
-BOOL IsMainWindow(HWND handle) {
-	return GetWindow(handle, GW_OWNER) == (HWND)0 && IsWindowVisible(handle);
+	std::string s = wstring_to_string(guidSTR);
+	CoTaskMemFree(guidSTR); // Free memory allocated by StringFromCLSID
+	return s;
 }
 
 GUID LPCSTRGUIDtoGUID(LPCSTR guidInstance) {
-	GUID deviceGuid;
+	GUID deviceGuid = GUID_NULL;
+	if (!guidInstance) {
+		LogMessage("LPCSTRGUIDtoGUID: Invalid GUID string (null)");
+		return deviceGuid;
+	}
+
 	int wcharCount = MultiByteToWideChar(CP_UTF8, 0, guidInstance, -1, NULL, 0);
+	if (wcharCount <= 0) {
+		LogMessage("LPCSTRGUIDtoGUID: MultiByteToWideChar failed to get size");
+		return deviceGuid;
+	}
+
 	WCHAR* wstrGuidInstance = new WCHAR[wcharCount];
+	if (!wstrGuidInstance) {
+		LogMessage("LPCSTRGUIDtoGUID: Memory allocation failed");
+		return deviceGuid;
+	}
+
 	MultiByteToWideChar(CP_UTF8, 0, guidInstance, -1, wstrGuidInstance, wcharCount);
-	(void)CLSIDFromString(wstrGuidInstance, &deviceGuid);
+	HRESULT hr = CLSIDFromString(wstrGuidInstance, &deviceGuid);
 	delete[] wstrGuidInstance;
+
+	if (FAILED(hr)) {
+		LogMessage("LPCSTRGUIDtoGUID: CLSIDFromString failed: 0x%08X", hr);
+	}
+
 	return deviceGuid;
 }
-
 FlatJoyState2 FlattenDIJOYSTATE2(DIJOYSTATE2 DeviceState) {
-	FlatJoyState2 state = FlatJoyState2(); // Hold the flattend state
+	FlatJoyState2 state = {};
 
-	// ButtonA
-	for (int i = 0; i < 64; i++) { // In banks of 64, shift in the sate of each button BankA 0-63
-		if (DeviceState.rgbButtons[i] == 128) // 128 = Button pressed
-			state.buttonsA |= (unsigned long long)1 << i; // Shift in a 1 to the button at index i
+	// Buttons (banks A and B)
+	for (int i = 0; i < 64; i++) {
+		if (DeviceState.rgbButtons[i] == 128)
+			state.buttonsA |= (unsigned long long)1 << i;
 	}
-	// ButtonB
-	for (int i = 64; i < 128; i++) { // 2nd bank of buttons from 64-128
-		if (DeviceState.rgbButtons[i] == 128) // 128 = Button pressed
-			state.buttonsB |= (unsigned long long)1 << i; // Shift in a 1 to the button at index i
+	for (int i = 64; i < 128; i++) {
+		if (DeviceState.rgbButtons[i] == 128)
+			state.buttonsB |= (unsigned long long)1 << (i - 64);
 	}
 
-	// Properly cast and clamp values to uint16_t range
 	auto ClampToUInt16 = [](LONG value) -> uint16_t {
 		return static_cast<uint16_t>(std::clamp(value, 0L, static_cast<LONG>(UINT16_MAX)));
 		};
 
-	// Axis assignments with proper ClampToUInt16
 	state.lX = ClampToUInt16(DeviceState.lX);
 	state.lY = ClampToUInt16(DeviceState.lY);
 	state.lZ = ClampToUInt16(DeviceState.lZ);
 	state.lU = ClampToUInt16(DeviceState.rglSlider[0]);
 	state.lV = ClampToUInt16(DeviceState.rglSlider[1]);
-
-	// Rotation assignments
 	state.lRx = ClampToUInt16(DeviceState.lRx);
 	state.lRy = ClampToUInt16(DeviceState.lRy);
 	state.lRz = ClampToUInt16(DeviceState.lRz);
-
-	// Velocity assignments
 	state.lVX = ClampToUInt16(DeviceState.lVX);
 	state.lVY = ClampToUInt16(DeviceState.lVY);
 	state.lVZ = ClampToUInt16(DeviceState.lVZ);
 	state.lVU = ClampToUInt16(DeviceState.rglVSlider[0]);
 	state.lVV = ClampToUInt16(DeviceState.rglVSlider[1]);
-
-	// Angular velocity assignments
 	state.lVRx = ClampToUInt16(DeviceState.lVRx);
 	state.lVRy = ClampToUInt16(DeviceState.lVRy);
 	state.lVRz = ClampToUInt16(DeviceState.lVRz);
-
-	// Acceleration assignments
 	state.lAX = ClampToUInt16(DeviceState.lAX);
 	state.lAY = ClampToUInt16(DeviceState.lAY);
 	state.lAZ = ClampToUInt16(DeviceState.lAZ);
 	state.lAU = ClampToUInt16(DeviceState.rglASlider[0]);
 	state.lAV = ClampToUInt16(DeviceState.rglASlider[1]);
-
-	// Angular acceleration assignments
 	state.lARx = ClampToUInt16(DeviceState.lARx);
 	state.lARy = ClampToUInt16(DeviceState.lARy);
 	state.lARz = ClampToUInt16(DeviceState.lARz);
-
-	// Force assignments
 	state.lFX = ClampToUInt16(DeviceState.lFX);
 	state.lFY = ClampToUInt16(DeviceState.lFY);
 	state.lFZ = ClampToUInt16(DeviceState.lFZ);
 	state.lFU = ClampToUInt16(DeviceState.rglFSlider[0]);
 	state.lFV = ClampToUInt16(DeviceState.rglFSlider[1]);
-
-	// Torque assignments
 	state.lFRx = ClampToUInt16(DeviceState.lFRx);
 	state.lFRy = ClampToUInt16(DeviceState.lFRy);
 	state.lFRz = ClampToUInt16(DeviceState.lFRz);
 
-	for (int i = 0; i < 4; i++) { // In banks of 4, shift in the sate of each DPAD 0-16 bits 
+	// DPAD: Use consistent bit shifting pattern for the four directions
+	for (int i = 0; i < 4; i++) {
 		switch (DeviceState.rgdwPOV[i]) {
-		case 0:     state.rgdwPOV |= (byte)(1 << ((i + 1) * 0)); break; // dpad[i]/up, bit = 0     shift into value at stride (i+1) * DPADButton
-		case 18000: state.rgdwPOV |= (byte)(1 << ((i + 1) * 1)); break; // dpad[i]/down, bit = 1
-		case 27000: state.rgdwPOV |= (byte)(1 << ((i + 1) * 2)); break; // dpad[i]/left, bit = 2
-		case 9000:  state.rgdwPOV |= (byte)(1 << ((i + 1) * 3)); break; // dpad[i]/right, bit = 3
+		case 0:
+			state.rgdwPOV |= (BYTE)(1 << (i * 4 + 0));
+			break;
+		case 18000:
+			state.rgdwPOV |= (BYTE)(1 << (i * 4 + 1));
+			break;
+		case 27000:
+			state.rgdwPOV |= (BYTE)(1 << (i * 4 + 2));
+			break;
+		case 9000:
+			state.rgdwPOV |= (BYTE)(1 << (i * 4 + 3));
+			break;
 		}
 	}
-
 	return state;
 }
 
 bool GUIDMatch(LPCSTR guidInstance, LPDIRECTINPUTDEVICE8 Device) {
-	DIDEVICEINSTANCE deviceInfo = { sizeof(DIDEVICEINSTANCE) };
-	if (FAILED(Device->GetDeviceInfo(&deviceInfo))) { return false; } // Fetch device info
-	if (deviceInfo.guidInstance == LPCSTRGUIDtoGUID(guidInstance)) { // Check if GUID matches the device we want
-		return true;
+	if (!guidInstance || !Device) {
+		LogMessage("GUIDMatch: Invalid parameters");
+		return false;
 	}
-	return false;
+
+	DIDEVICEINSTANCE deviceInfo = { sizeof(DIDEVICEINSTANCE) };
+	HRESULT hr = Device->GetDeviceInfo(&deviceInfo);
+	if (FAILED(hr)) {
+		LogMessage("GUIDMatch: Failed to get device info: 0x%08X", hr);
+		return false;
+	}
+
+	GUID instanceGuid = LPCSTRGUIDtoGUID(guidInstance);
+	return (deviceInfo.guidInstance == instanceGuid);
 }
 
 GUID Device2GUID(LPDIRECTINPUTDEVICE8 Device) {
+	GUID result = GUID_NULL;
+	if (!Device) {
+		LogMessage("Device2GUID: Invalid device (null)");
+		return result;
+	}
+
 	DIDEVICEINSTANCE deviceInfo = { sizeof(DIDEVICEINSTANCE) };
-	if (FAILED(Device->GetDeviceInfo(&deviceInfo))) { /*return false;*/ } // Fetch device info
+	HRESULT hr = Device->GetDeviceInfo(&deviceInfo);
+	if (FAILED(hr)) {
+		LogMessage("Device2GUID: Failed to get device info: 0x%08X", hr);
+		return result;
+	}
+
 	return deviceInfo.guidInstance;
 }
 
-// Helper function to convert a std::wstring to the ATL CComBSTR wrapper (Handy because it can be sized at runtime)
 inline CComBSTR ToBstr(const std::wstring& s) {
-	if (s.empty()) { return CComBSTR(); }// Special case of empty string
+	if (s.empty()) {
+		return CComBSTR();
+	}
 	return CComBSTR(static_cast<int>(s.size()), s.data());
 }
 
 void DestroyDeviceIfExists(LPCSTR guidInstance) {
-	std::string GUIDString((LPCSTR)guidInstance); if (!_ActiveDevices.contains(GUIDString)) return; // Device not attached, fail
+	if (!guidInstance) {
+		LogMessage("DestroyDeviceIfExists: Invalid GUID (null)");
+		return;
+	}
+
+	std::string GUIDString(guidInstance);
+	if (!_ActiveDevices.contains(GUIDString)) {
+		return; // Device not found, nothing to destroy
+	}
+
+	LogMessage("DestroyDeviceIfExists: Destroying existing device: %s", GUIDString.c_str());
 	DestroyDevice(guidInstance);
 }
 
@@ -1003,81 +1679,76 @@ DWORD AxisTypeToDIJOFS(GUID axisType) {
 	}
 	else if (axisType == GUID_RzAxis) {
 		return DIJOFS_RZ;
-	} /*else if (axisType == GUID_Slider) {
-	  return DIJOFS_SLIDER;
-	} else if (axisType == GUID_Button) {
-	  return DIJOFS_BUTTON1;
-	} else if (axisType == GUID_Key) {
-	  return DIJOFS_;
-	} else if (axisType == GUID_POV) {
-	  return DIJOFS_POV;
-	} else if (AxesType == GUID_Unknown) {
-	  return DIJOFS_;
-	}*/
+	}
 
-	return 0; // GUID Type not found, likely POV Hat, Slider or Button
+	// GUID type not found (likely POV Hat, Slider or Button)
+	return 0;
 }
 
 GUID EffectTypeToGUID(Effects::Type effectType) {
 	switch (effectType) {
 	case Effects::Type::ConstantForce:
 		return GUID_ConstantForce;
-		break;
 	case Effects::Type::RampForce:
 		return GUID_RampForce;
-		break;
 	case Effects::Type::Square:
 		return GUID_Square;
-		break;
 	case Effects::Type::Sine:
 		return GUID_Sine;
-		break;
 	case Effects::Type::Triangle:
 		return GUID_Triangle;
-		break;
 	case Effects::Type::SawtoothUp:
 		return GUID_SawtoothUp;
-		break;
 	case Effects::Type::SawtoothDown:
 		return GUID_SawtoothDown;
-		break;
 	case Effects::Type::Spring:
 		return GUID_Spring;
-		break;
 	case Effects::Type::Damper:
 		return GUID_Damper;
-		break;
 	case Effects::Type::Inertia:
 		return GUID_Inertia;
-		break;
 	case Effects::Type::Friction:
 		return GUID_Friction;
-		break;
 	case Effects::Type::CustomForce:
 		return GUID_CustomForce;
-		break;
 	default:
+		LogMessage("EffectTypeToGUID: Unknown effect type: %d", static_cast<int>(effectType));
 		return GUID_Unknown;
 	}
 }
 
 bool IsDuplicateHID(const DIDEVICEINSTANCE* DIDI) {
+	if (!DIDI) {
+		LogMessage("IsDuplicateHID: Invalid device instance (null)");
+		return true;
+	}
+
 	HRESULT hr;
 	LPDIRECTINPUTDEVICE8 DIDevice = nullptr;
-	if (FAILED(hr = _DirectInput->CreateDevice(DIDI->guidInstance, &DIDevice, NULL))) { return true; } // L"CreateDevice failed! 0x%08x", hr
+	if (FAILED(hr = _DirectInput->CreateDevice(DIDI->guidInstance, &DIDevice, NULL))) {
+		LogMessage("IsDuplicateHID: Failed to create device: 0x%08X", hr);
+		return true; // If we cannot create the device, assume it is duplicate
+	}
 
 	DIPROPGUIDANDPATH GUIDPath = {};
 	GUIDPath.diph.dwSize = sizeof(DIPROPGUIDANDPATH);
 	GUIDPath.diph.dwHeaderSize = sizeof(DIPROPHEADER);
 	GUIDPath.diph.dwObj = 0;
 	GUIDPath.diph.dwHow = DIPH_DEVICE;
-	if (FAILED(hr = DIDevice->GetProperty(DIPROP_GUIDANDPATH, &GUIDPath.diph))) { DIDevice->Release(); return true; } // L"GetProperty failed! Failed to get symbolic path for device 0x%08x", hr
-	DIDevice->Release();
 
-	if (wcsstr(GUIDPath.wszPath, L"&col02") != 0) { // This is a duplicate device (HID Path contains "&col02")
+	if (FAILED(hr = DIDevice->GetProperty(DIPROP_GUIDANDPATH, &GUIDPath.diph))) {
+		LogMessage("IsDuplicateHID: Failed to get device path: 0x%08X", hr);
+		DIDevice->Release();
 		return true;
 	}
-	else {
-		return false; // This is our primary device
+
+	DIDevice->Release();
+
+	// If the HID path contains "&col02", consider this a duplicate device
+	if (wcsstr(GUIDPath.wszPath, L"&col02") != 0) {
+		LogMessage("IsDuplicateHID: Duplicate device detected (contains &col02)");
+		return true;
 	}
+
+	return false;
 }
