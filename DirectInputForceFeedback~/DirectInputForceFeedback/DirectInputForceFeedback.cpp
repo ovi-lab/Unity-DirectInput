@@ -809,19 +809,31 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateFFBEffect(LPCSTR guidInstance, Effect
 			}
 
 			ZeroMemory(customForce, sizeof(DICUSTOMFORCE));
-			customForce->cChannels = FFBAxesCount;
-			customForce->dwSamplePeriod = deviceCaps.dwFFSamplePeriod;
-			customForce->cSamples = 2;
 
+			// Set channels to 1 - this is typically what DirectInput expects for custom forces
+			customForce->cChannels = 1;
+
+			// Use device sample period from capabilities
+			customForce->dwSamplePeriod = deviceCaps.dwFFSamplePeriod;
+
+			// Start with a more reasonable number of samples (can be updated later)
+			customForce->cSamples = 10;
+
+			// Create and initialize the force data array
 			forceData = new LONG[customForce->cSamples];
-			forceData[0] = 0;
-			forceData[1] = 5000;
+			// Initialize with a simple pattern
+			for (DWORD i = 0; i < customForce->cSamples; i++) {
+				forceData[i] = 0;  // Start with zero force
+			}
 			customForce->rglForceData = forceData;
 
 			effect.cbTypeSpecificParams = sizeof(DICUSTOMFORCE);
 			effect.lpvTypeSpecificParams = customForce;
 			effect.dwSamplePeriod = customForce->dwSamplePeriod;
-			LogMessage("CreateFFBEffect: Creating Custom Force effect");
+
+			// Add more detailed logging
+			LogMessage("CreateFFBEffect: Creating Custom Force effect with %d channels, %d samples, period %d",
+				customForce->cChannels, customForce->cSamples, customForce->dwSamplePeriod);
 			break;
 
 		default:
@@ -1015,6 +1027,20 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateFFBEffect(LPCSTR guidInstance, Effect
 				rf->lEnd = conditions[idx].lNegativeCoefficient;
 				break;
 			}
+			case Effects::Type::CustomForce: {
+				auto cf = static_cast<DICUSTOMFORCE*>(effectConfig.lpvTypeSpecificParams);
+				if (!cf) {
+					LogMessage("UpdateFFBEffect: Invalid custom force parameters");
+					return E_POINTER;
+				}
+				// Extract sample data from conditions
+				if (idx < cf->cSamples) {
+					cf->rglForceData[idx] = conditions[idx].lPositiveCoefficient;
+				}
+				// Get sample period from first condition
+				cf->dwSamplePeriod = conditions[0].lNegativeCoefficient;
+				break;
+			}
 			default: {
 				auto* cond = static_cast<DICONDITION*>(effectConfig.lpvTypeSpecificParams);
 				if (!cond) {
@@ -1160,6 +1186,21 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEA
 			return hr;
 		}
 
+		// Add device name information
+		debugInfo.push_back(L"Device Information:");
+		DIDEVICEINSTANCE deviceInstance = {};
+		deviceInstance.dwSize = sizeof(DIDEVICEINSTANCE);
+		hr = _ActiveDevices[GUIDString]->GetDeviceInfo(&deviceInstance);
+		if (SUCCEEDED(hr)) {
+			debugInfo.push_back(L"  - Product Name: " + std::wstring(deviceInstance.tszProductName));
+			debugInfo.push_back(L"  - Instance Name: " + std::wstring(deviceInstance.tszInstanceName));
+			debugInfo.push_back(L"  - Device Type: 0x" + std::to_wstring(LOWORD(deviceInstance.dwDevType)));
+			debugInfo.push_back(L"  - Device Subtype: 0x" + std::to_wstring(HIWORD(deviceInstance.dwDevType)));
+		}
+		else {
+			debugInfo.push_back(L"  - Failed to get device information: 0x" + std::to_wstring(hr));
+		}
+
 		// Get device capabilities
 		DIDEVCAPS deviceCaps = {};
 		deviceCaps.dwSize = sizeof(DIDEVCAPS);
@@ -1172,6 +1213,10 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEA
 			debugInfo.push_back(L"  - POVs: " + std::to_wstring(deviceCaps.dwPOVs));
 			debugInfo.push_back(L"  - FFB Sample Period: " + std::to_wstring(deviceCaps.dwFFSamplePeriod) + L" microseconds");
 			debugInfo.push_back(L"  - FFB Min Time Resolution: " + std::to_wstring(deviceCaps.dwFFMinTimeResolution) + L" microseconds");
+
+			// Add FFB capability status based on device capabilities
+			bool isFFB = (deviceCaps.dwFlags & DIDC_FORCEFEEDBACK) != 0;
+			debugInfo.push_back(L"  - Force Feedback: " + std::wstring(isFFB ? L"Available" : L"Not Available"));
 		}
 		else {
 			debugInfo.push_back(L"ERROR: Failed to get device capabilities - 0x" + std::to_wstring(hr));
@@ -1322,6 +1367,7 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEA
 		return E_FAIL;
 	}
 }
+
 //////////////////////////////////////////////////////////////
 // Callback Functions
 //////////////////////////////////////////////////////////////

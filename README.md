@@ -46,7 +46,7 @@ Next, Go to the [Releases section of this GitHub repository](https://github.com/
 | RightCollision  	| ✅ |
 
 [comment]: <> (✅ ℹ️ 🔲)
-Note that everything is adjustable in the native DLL, The Custom Force effect exists but has not been fully done, And the collision effects are only in the Unity project.
+Note that everything is adjustable in the native DLL, The Custom Force effect exists but has not been fully implemented, And the collision effects are only in the Unity project. This is optimized to be used in Unity Game Engine only.
 
 ## Compatible Devices
 ### Note that all the devices that use Direct Input (from the old Logitech G wheels to the advanced Simucube ones) should work
@@ -75,17 +75,42 @@ Note for pedals, only input readings were guaranteed to *likely* work fine.
 
 ## Environment
 
-This plugin only works on Windows 8+ 64-bit.
+- Latest verified Unity version: 2022.3
 
-Latest verified Unity version: 2022.2.1f1
+### Windows Version Support
+The DirectInputManager should run on Windows 10 22H2 and newer (e.g. Windows 11) out of the box. The DirectInput API is available on these modern Windows versions without additional packages.
+
+### Development Requirements
+For developers working on the project:
+- Visual Studio 2019 or newer
+- .NET 5 SDK
+- Windows SDK (for DirectInput headers)
+- Microsoft Visual C++ Redistributable
+- C++ build tools if modifying the native DLL
+You *may* need to enable "allow unsafe code" in the Player Settings of your Unity project to build your game, or not - not tested.
+
+### User Requirements
+For end users running the built application:
+- Microsoft Visual C++ Redistributable
+- .NET 5 Runtime
+- Windows 10 22H2 or newer (Can be used in Windows 7+ theoretically but not tested)
+- The DirectInputForceFeedback.dll must be properly deployed alongside the application
+- No special DirectX installation is required on modern Windows as DirectInput is part of the OS
+The project provides force feedback support for DirectInput-compatible devices like joysticks, wheels, and game controllers. It's designed to work both as a standalone .NET application and within Unity projects.
+
+### Additional Installation Info
+For Unitypackage, if you do not have some SDKs installed you may get an error stating that the DLL is not found, to solve that issue do the following:
+
+> 0. Clone the [DirectInput repository](https://github.com/imDanoush/Unity-DirectInput/) , 
+> 1. then go to the `/DirectInputForcefeedback~` folder, there is a `.sln` Visual Studio project file, 
+> 2. open it and press F5 in VS to build a new DLL where you'll be asked to install the missing SDKs
+> 3. the newly built DLL will be available in the directory where the `output` of the visual studio states. Simply copy it from where it was created, and paste it over the DLL in Unity's `Asset/Plugin` folder for Direct Input
 
 # Notice
-
 Occasionally calls to EnumerateDevices will take orders of magnitude longer than usual to execute (up to 60 seconds), this is caused by a Windows bug attempting to load an absent hardware device. USB Audio DACs & Corsair keyboards are known the cause this issue, try disconnecting and reconnecting offending USB devices. For more information see [this](https://stackoverflow.com/questions/10967795/directinput8-enumdevices-sometimes-painfully-slow) StackOverflow post about the issue from 2012. See issue [#1](https://github.com/MrTimcakes/Unity-DirectInput/issues/1) for more info.
 
-# Support
-
-If you have problems, please [raise an issue](https://github.com/MrTimcakes/Unity-DirectInput/issues/new) on GitHub. The original code is by Mr.TimCakes.
+# Original Codebase
+The original fundamentals coded by Mr.TimCakes though got significantly changed.
 
 # License
 

@@ -10,7 +10,7 @@ using System.Linq;
 public class DirectInputLogger : MonoBehaviour
 {
     public static DirectInputLogger Instance { get; private set; }
-    private static List<LogEntry> visualLogs = new List<LogEntry>();
+    private static List<LogEntry> visualLogs = new();
     private static Vector2 logScrollPosition;
     private GUIStyle logHeaderStyle;
     private GUIStyle logEntryStyle;
@@ -72,7 +72,7 @@ public class DirectInputLogger : MonoBehaviour
     {
         if (Instance == null)
         {
-            GameObject loggerObject = new GameObject("DirectInputLogger");
+            GameObject loggerObject = new("DirectInputLogger");
             Instance = loggerObject.AddComponent<DirectInputLogger>();
             DontDestroyOnLoad(loggerObject);
         }
@@ -106,7 +106,7 @@ public class DirectInputLogger : MonoBehaviour
 
     private Texture2D CreateColorTexture(Color color)
     {
-        Texture2D tex = new Texture2D(1, 1);
+        Texture2D tex = new(1, 1);
         tex.SetPixel(0, 0, color);
         tex.Apply();
         return tex;
@@ -163,7 +163,7 @@ public class DirectInputLogger : MonoBehaviour
         if (windowHeight < 80) windowHeight = 80; // Minimum height
 
         // Draw background box
-        Rect windowRect = new Rect(
+        Rect windowRect = new(
             Screen.width - windowWidth - 20,
             20,
             windowWidth,
