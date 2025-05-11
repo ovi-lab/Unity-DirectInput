@@ -13,9 +13,6 @@
     <Compile Include="..\..\Plugin\DirectInputManager.cs" Link="DirectInputManager.cs">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </Compile>
-    <Compile Include="..\..\Plugin\DirectInputTypes.cs" Link="DirectInputTypes.cs">
-      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
-    </Compile>
   </ItemGroup>
 
 </Project>

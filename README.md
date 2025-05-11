@@ -106,6 +106,20 @@ For Unitypackage, if you do not have some SDKs installed you may get an error st
 > 2. open it and press F5 in VS to build a new DLL where you'll be asked to install the missing SDKs
 > 3. the newly built DLL will be available in the directory where the `output` of the visual studio states. Simply copy it from where it was created, and paste it over the DLL in Unity's `Asset/Plugin` folder for Direct Input
 
+### Force Feedback Axis Support
+
+**Important Note:** This plugin was designed primarily for standard direct input wheelbases as well as steering wheels. Thus, it supports force feedback on the first/primary axis of FFB-capable devices.
+
+While the code enumerates all available FFB axes and includes them in effect definitions, the current API functions do not provide individual control over secondary axes. 
+
+To properly support multiple FFB axes, the API would need to be extended with functions that:
+
+* Allow setting different direction values per axis in the `rglDirection` array
+* For condition effects, provide access to all elements in the condition array (not just `cond[0]`)
+* Include axis index parameters in the update functions
+
+These enhancements would enable support for devices with multiple force feedback axes, such as dual-motor joysticks or specialty controllers.
+
 # Notice
 Occasionally calls to EnumerateDevices will take orders of magnitude longer than usual to execute (up to 60 seconds), this is caused by a Windows bug attempting to load an absent hardware device. USB Audio DACs & Corsair keyboards are known the cause this issue, try disconnecting and reconnecting offending USB devices. For more information see [this](https://stackoverflow.com/questions/10967795/directinput8-enumdevices-sometimes-painfully-slow) StackOverflow post about the issue from 2012. See issue [#1](https://github.com/MrTimcakes/Unity-DirectInput/issues/1) for more info.
 

@@ -23,6 +23,65 @@ std::map<DeviceGUID, std::map<Effects::Type, LPDIRECTINPUTEFFECT>> _DeviceFFBEff
 DeviceChangeCallback g_deviceCallback = nullptr;
 std::vector<std::wstring> DEBUGDATA;
 
+// Safe string duplication with error checking
+char* SafeStrDup(const char* source) {
+	if (!source) {
+		LogMessage("SafeStrDup: Source string is null");
+		return nullptr;
+	}
+
+	size_t len = strlen(source);
+	if (len == 0) {
+		LogMessage("SafeStrDup: Source string is empty");
+	}
+
+	char* result = new (std::nothrow) char[len + 1];
+	if (!result) {
+		LogMessage("SafeStrDup: Memory allocation failed for string: %s", source);
+		return nullptr;
+	}
+
+	memcpy(result, source, len);
+	result[len] = '\0';
+	return result;
+}
+
+// Safe string freeing
+void SafeStrFree(char* str) {
+	if (str) {
+		delete[] str;
+	}
+}
+
+// GUID string validation
+bool IsValidGUIDString(LPCSTR guidString) {
+	if (!guidString) return false;
+
+	// Check minimum length
+	size_t len = strlen(guidString);
+	if (len < 36) return false; // Without braces: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+
+	// Basic pattern checking (could be more sophisticated)
+	if (len == 38) {
+		// Format with braces: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
+		if (guidString[0] != '{' || guidString[37] != '}') return false;
+
+		// Check for hyphens at correct positions
+		if (guidString[9] != '-' || guidString[14] != '-' ||
+			guidString[19] != '-' || guidString[24] != '-') return false;
+	}
+	else if (len == 36) {
+		// Format without braces: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+		if (guidString[8] != '-' || guidString[13] != '-' ||
+			guidString[18] != '-' || guidString[23] != '-') return false;
+	}
+	else {
+		return false;
+	}
+
+	return true;
+}
+
 // Unity plugin lifecycle functions
 extern "C" DIRECTINPUTFORCEFEEDBACK_API void UNITY_INTERFACE_API UnityPluginLoad(void* unityInterfaces) {
 	g_UnityInitialized = true;
@@ -91,24 +150,36 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT StopDirectInput() {
 	HRESULT hr = S_OK;
 
 	if (_DirectInput == nullptr) {
-		LogMessage("DirectInput already stopped");
+		LogMessage("StopDirectInput: DirectInput already stopped");
 		return S_OK;
 	}
 
+	// Clean up devices
 	for (const auto& [GUIDString, Device] : _ActiveDevices) {
 		hr = StopAllFFBEffects(GUIDString.c_str());
 		if (FAILED(hr)) {
-			LogMessage("Failed to stop FFB effects for device %s: 0x%08X", GUIDString.c_str(), hr);
+			LogMessage("StopDirectInput: Failed to stop FFB effects for device %s: 0x%08X",
+				GUIDString.c_str(), hr);
 		}
 
 		hr = Device->Unacquire();
 		if (FAILED(hr)) {
-			LogMessage("Failed to unacquire device %s: 0x%08X", GUIDString.c_str(), hr);
+			LogMessage("StopDirectInput: Failed to unacquire device %s: 0x%08X",
+				GUIDString.c_str(), hr);
 		}
 
 		Device->Release();
 	}
 
+	// Free memory in DeviceInstances
+	for (auto& device : _DeviceInstances) {
+		SafeStrFree(device.guidInstance);
+		SafeStrFree(device.guidProduct);
+		SafeStrFree(device.instanceName);
+		SafeStrFree(device.productName);
+	}
+
+	// Clear all collections
 	_DeviceInstances.clear();
 	_ActiveDevices.clear();
 	_DeviceEnumeratedEffects.clear();
@@ -116,14 +187,16 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT StopDirectInput() {
 	_DeviceFFBEffectConfig.clear();
 	_DeviceFFBEffectControl.clear();
 
+	// Release DirectInput
 	if (_DirectInput) {
 		_DirectInput->Release();
 		_DirectInput = nullptr;
 	}
 
-	LogMessage("DirectInput stopped successfully");
+	LogMessage("StopDirectInput: DirectInput stopped successfully");
 	return S_OK;
 }
+
 DIRECTINPUTFORCEFEEDBACK_API DeviceInfo* EnumerateDevices(int& deviceCount) {
 	try {
 		HRESULT hr = E_FAIL;
@@ -214,6 +287,13 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateDevice(LPCSTR guidInstance) {
 			return E_INVALIDARG;
 		}
 
+		// Validate GUID format before attempting to use it
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("CreateDevice: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
 		// Clear existing device if present
 		DestroyDeviceIfExists(guidInstance);
 
@@ -281,11 +361,19 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateDevice(LPCSTR guidInstance) {
 		return E_FAIL;
 	}
 }
+
 DIRECTINPUTFORCEFEEDBACK_API HRESULT DestroyDevice(LPCSTR guidInstance) {
 	try {
 		if (!guidInstance) {
 			LogMessage("DestroyDevice: Invalid GUID (null)");
 			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("DestroyDevice: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -328,11 +416,18 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DestroyDevice(LPCSTR guidInstance) {
 	}
 }
 
-DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceState(LPCSTR guidInstance, FlatJoyState2& deviceState) {
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceState(LPCSTR guidInstance, FlatJoyState2 & deviceState) {
 	try {
 		if (!guidInstance) {
 			LogMessage("GetDeviceState: Invalid GUID (null)");
 			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("GetDeviceState: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -378,11 +473,18 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceState(LPCSTR guidInstance, FlatJoy
 	}
 }
 
-DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceStateRaw(LPCSTR guidInstance, DIJOYSTATE2& deviceState) {
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceStateRaw(LPCSTR guidInstance, DIJOYSTATE2 & deviceState) {
 	try {
 		if (!guidInstance) {
 			LogMessage("GetDeviceStateRaw: Invalid GUID (null)");
 			SetLastErrorMessage("Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("GetDeviceStateRaw: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -425,10 +527,18 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceStateRaw(LPCSTR guidInstance, DIJO
 		return E_FAIL;
 	}
 }
-DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceCapabilities(LPCSTR guidInstance, DIDEVCAPS& deviceCapabilitiesOut) {
+
+DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDeviceCapabilities(LPCSTR guidInstance, DIDEVCAPS & deviceCapabilitiesOut) {
 	try {
 		if (!guidInstance) {
 			LogMessage("GetDeviceCapabilities: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("GetDeviceCapabilities: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -467,6 +577,13 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT SetAutocenter(LPCSTR guidInstance, bool Aut
 			return E_INVALIDARG;
 		}
 
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("SetAutocenter: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
 		std::string GUIDString(guidInstance);
 		if (!_ActiveDevices.contains(GUIDString)) {
 			LogMessage("SetAutocenter: Device not found");
@@ -501,6 +618,12 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT SetAutocenter(LPCSTR guidInstance, bool Aut
 
 DIRECTINPUTFORCEFEEDBACK_API HRESULT GetActiveDevices(int* count, const char*** outStrings) {
 	try {
+		// Validate parameters
+		if (!count || !outStrings) {
+			LogMessage("GetActiveDevices: Invalid output parameters");
+			return E_POINTER;
+		}
+
 		*count = 0;
 		*outStrings = nullptr;
 
@@ -509,28 +632,44 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT GetActiveDevices(int* count, const char*** 
 			return S_OK;
 		}
 
-		std::vector<std::wstring> deviceData;
+		// Create a vector of strings
+		std::vector<std::string> deviceStrings;
 		for (const auto& [GUIDString, Device] : _ActiveDevices) {
-			deviceData.push_back(string_to_wstring(GUIDString));
+			deviceStrings.push_back(GUIDString);
 		}
 
-		*count = static_cast<int>(deviceData.size());
-		const char** result = new const char* [*count];
+		// Allocate array of char pointers
+		*count = static_cast<int>(deviceStrings.size());
+		const char** result = new (std::nothrow) const char* [*count];
+		if (!result) {
+			LogMessage("GetActiveDevices: Memory allocation failed for string array");
+			*count = 0;
+			return E_OUTOFMEMORY;
+		}
 
-		for (int i = 0; i < *count; ++i) {
-			std::string utf8Str = wstring_to_string(deviceData[i]);
-			result[i] = _strdup(utf8Str.c_str());
+		// Initialize all to nullptr for error recovery
+		for (int i = 0; i < *count; i++) {
+			result[i] = nullptr;
+		}
+
+		// Allocate individual strings
+		for (int i = 0; i < *count; i++) {
+			result[i] = SafeStrDup(deviceStrings[i].c_str());
 			if (!result[i]) {
-				for (int j = 0; j < i; ++j)
-					free((void*)result[j]);
+				// Cleanup on failure
+				for (int j = 0; j < i; j++) {
+					SafeStrFree(const_cast<char*>(result[j]));
+				}
 				delete[] result;
-				LogMessage("GetActiveDevices: Memory allocation failed");
+				*count = 0;
+				*outStrings = nullptr;
+				LogMessage("GetActiveDevices: Memory allocation failed for string %d", i);
 				return E_OUTOFMEMORY;
 			}
 		}
 
 		*outStrings = result;
-		LogMessage("GetActiveDevices: Found %d active devices", *count);
+		LogMessage("GetActiveDevices: Successfully returned %d devices", *count);
 		return S_OK;
 	}
 	catch (const std::exception& e) {
@@ -542,6 +681,7 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT GetActiveDevices(int* count, const char*** 
 		return E_FAIL;
 	}
 }
+
 DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBEffects(LPCSTR guidInstance, int* count, const char*** outStrings) {
 	try {
 		*count = 0;
@@ -549,6 +689,13 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBEffects(LPCSTR guidInstance, in
 
 		if (!guidInstance) {
 			LogMessage("EnumerateFFBEffects: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("EnumerateFFBEffects: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -576,14 +723,27 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBEffects(LPCSTR guidInstance, in
 			return S_OK;
 		}
 
-		const char** result = new const char* [*count];
+		const char** result = new (std::nothrow) const char* [*count];
+		if (!result) {
+			LogMessage("EnumerateFFBEffects: Memory allocation failed for string array");
+			*count = 0;
+			return E_OUTOFMEMORY;
+		}
+
+		// Initialize all to nullptr for error recovery
+		for (int i = 0; i < *count; i++) {
+			result[i] = nullptr;
+		}
+
 		for (int i = 0; i < *count; ++i) {
 			std::string utf8Str = wstring_to_string(effectData[i]);
-			result[i] = _strdup(utf8Str.c_str());
+			result[i] = SafeStrDup(utf8Str.c_str());
 			if (!result[i]) {
 				for (int j = 0; j < i; ++j)
-					free((void*)result[j]);
+					SafeStrFree(const_cast<char*>(result[j]));
 				delete[] result;
+				*count = 0;
+				*outStrings = nullptr;
 				LogMessage("EnumerateFFBEffects: Memory allocation failed");
 				return E_OUTOFMEMORY;
 			}
@@ -610,6 +770,13 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBAxes(LPCSTR guidInstance, int* 
 
 		if (!guidInstance) {
 			LogMessage("EnumerateFFBAxes: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("EnumerateFFBAxes: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -643,14 +810,27 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBAxes(LPCSTR guidInstance, int* 
 			return S_OK;
 		}
 
-		const char** result = new const char* [*count];
+		const char** result = new (std::nothrow) const char* [*count];
+		if (!result) {
+			LogMessage("EnumerateFFBAxes: Memory allocation failed for string array");
+			*count = 0;
+			return E_OUTOFMEMORY;
+		}
+
+		// Initialize all to nullptr for error recovery
+		for (int i = 0; i < *count; i++) {
+			result[i] = nullptr;
+		}
+
 		for (int i = 0; i < *count; ++i) {
 			std::string utf8Str = wstring_to_string(axesData[i]);
-			result[i] = _strdup(utf8Str.c_str());
+			result[i] = SafeStrDup(utf8Str.c_str());
 			if (!result[i]) {
 				for (int j = 0; j < i; ++j)
-					free((void*)result[j]);
+					SafeStrFree(const_cast<char*>(result[j]));
 				delete[] result;
+				*count = 0;
+				*outStrings = nullptr;
 				LogMessage("EnumerateFFBAxes: Memory allocation failed");
 				return E_OUTOFMEMORY;
 			}
@@ -671,15 +851,27 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT EnumerateFFBAxes(LPCSTR guidInstance, int* 
 }
 
 DIRECTINPUTFORCEFEEDBACK_API void FreeStringArray(const char** strings, int count) {
-	if (strings) {
-		for (int i = 0; i < count; ++i) {
-			if (strings[i]) {
-				free((void*)strings[i]);
-			}
-		}
-		delete[] strings;
+	if (!strings) {
+		LogMessage("FreeStringArray: Null pointer provided");
+		return;
 	}
+
+	if (count <= 0) {
+		LogMessage("FreeStringArray: Invalid count: %d", count);
+		delete[] strings; // Still free the array itself to prevent leaks
+		return;
+	}
+
+	for (int i = 0; i < count; i++) {
+		if (strings[i]) {
+			SafeStrFree(const_cast<char*>(strings[i]));
+		}
+	}
+
+	delete[] strings;
+	LogMessage("FreeStringArray: Successfully freed %d strings", count);
 }
+
 DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
 	try {
 		if (!guidInstance) {
@@ -687,10 +879,25 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateFFBEffect(LPCSTR guidInstance, Effect
 			return E_INVALIDARG;
 		}
 
+		// Validate GUID format before attempting to use it
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("CreateFFBEffect: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
 		std::string GUIDString(guidInstance);
 		if (!_ActiveDevices.contains(GUIDString)) {
-			LogMessage("CreateFFBEffect: Device not found");
+			LogMessage("CreateFFBEffect: Device not found for GUID: %s", GUIDString.c_str());
 			return E_FAIL;
+		}
+
+		// Check if device is valid before attempting to create effects
+		LPDIRECTINPUTDEVICE8 device = _ActiveDevices[GUIDString];
+		if (!device) {
+			LogMessage("CreateFFBEffect: Device handle is null for GUID: %s", GUIDString.c_str());
+			_ActiveDevices.erase(GUIDString); // Remove invalid device entry
+			return E_HANDLE;
 		}
 
 		if (_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
@@ -908,10 +1115,18 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT CreateFFBEffect(LPCSTR guidInstance, Effect
 		return E_FAIL;
 	}
 }
+
 DIRECTINPUTFORCEFEEDBACK_API HRESULT DestroyFFBEffect(LPCSTR guidInstance, Effects::Type effectType) {
 	try {
 		if (!guidInstance) {
 			LogMessage("DestroyFFBEffect: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("DestroyFFBEffect: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -971,119 +1186,358 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DestroyFFBEffect(LPCSTR guidInstance, Effec
 	}
 }
 
-DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateFFBEffect(LPCSTR guidInstance, Effects::Type effectType, DICONDITION* conditions) {
+extern "C" DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateConstantForce(LPCSTR guidInstance, int magnitude)
+{
 	try {
-		if (!guidInstance || !conditions) {
-			LogMessage("UpdateFFBEffect: Invalid parameters");
+		if (!guidInstance) {
+			LogMessage("UpdateConstantForce: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("UpdateConstantForce: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
 		std::string GUIDString(guidInstance);
 		if (!_ActiveDevices.contains(GUIDString)) {
-			LogMessage("UpdateFFBEffect: Device not found");
+			LogMessage("UpdateConstantForce: Device not found");
+			return E_FAIL;
+		}
+
+		if (!_DeviceFFBEffectControl[GUIDString].contains(Effects::Type::ConstantForce)) {
+			LogMessage("UpdateConstantForce: ConstantForce effect not found");
+			return E_ABORT;
+		}
+
+		auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][Effects::Type::ConstantForce];
+		auto* cf = static_cast<DICONSTANTFORCE*>(effectConfig.lpvTypeSpecificParams);
+		if (!cf) {
+			LogMessage("UpdateConstantForce: Invalid constant force parameters");
+			return E_POINTER;
+		}
+
+		int clamped = (magnitude > 10000) ? 10000 : (magnitude < -10000) ? -10000 : magnitude;
+		cf->lMagnitude = clamped;
+
+		HRESULT hr = _DeviceFFBEffectControl[GUIDString][Effects::Type::ConstantForce]->SetParameters(
+			&effectConfig, DIEP_TYPESPECIFICPARAMS
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("UpdateConstantForce: Failed to update effect parameters: 0x%08X", hr);
+			return hr;
+		}
+
+		LogMessage("UpdateConstantForce: Magnitude set to %d", clamped);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("UpdateConstantForce: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("UpdateConstantForce: Unknown exception");
+		return E_FAIL;
+	}
+}
+
+extern "C" DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdatePeriodicForce(LPCSTR guidInstance, Effects::Type effectType, int magnitude, DWORD period, int offset)
+{
+	try {
+		if (!guidInstance) {
+			LogMessage("UpdatePeriodicForce: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("UpdatePeriodicForce: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
+		if (effectType != Effects::Type::Sine &&
+			effectType != Effects::Type::Square &&
+			effectType != Effects::Type::Triangle &&
+			effectType != Effects::Type::SawtoothUp &&
+			effectType != Effects::Type::SawtoothDown) {
+			LogMessage("UpdatePeriodicForce: Not a periodic effect type");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("UpdatePeriodicForce: Device not found");
 			return E_FAIL;
 		}
 
 		if (!_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
-			LogMessage("UpdateFFBEffect: Effect not found");
+			LogMessage("UpdatePeriodicForce: Effect not found");
 			return E_ABORT;
 		}
 
 		auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][effectType];
-
-		for (DWORD idx = 0; idx < effectConfig.cAxes; idx++) {
-			switch (effectType) {
-			case Effects::Type::ConstantForce: {
-				auto* cf = static_cast<DICONSTANTFORCE*>(effectConfig.lpvTypeSpecificParams);
-				if (!cf) {
-					LogMessage("UpdateFFBEffect: Invalid constant force parameters");
-					return E_POINTER;
-				}
-				cf->lMagnitude = conditions[idx].lPositiveCoefficient;
-				break;
-			}
-			case Effects::Type::Sine:
-			case Effects::Type::Square:
-			case Effects::Type::Triangle:
-			case Effects::Type::SawtoothUp:
-			case Effects::Type::SawtoothDown: {
-				auto* pe = static_cast<DIPERIODIC*>(effectConfig.lpvTypeSpecificParams);
-				if (!pe) {
-					LogMessage("UpdateFFBEffect: Invalid periodic parameters");
-					return E_POINTER;
-				}
-				pe->dwMagnitude = conditions[idx].lPositiveCoefficient;
-				pe->lOffset = conditions[idx].lOffset;
-				pe->dwPeriod = conditions[idx].dwPositiveSaturation;
-				break;
-			}
-			case Effects::Type::RampForce: {
-				auto* rf = static_cast<DIRAMPFORCE*>(effectConfig.lpvTypeSpecificParams);
-				if (!rf) {
-					LogMessage("UpdateFFBEffect: Invalid ramp force parameters");
-					return E_POINTER;
-				}
-				rf->lStart = conditions[idx].lPositiveCoefficient;
-				rf->lEnd = conditions[idx].lNegativeCoefficient;
-				break;
-			}
-			case Effects::Type::CustomForce: {
-				auto cf = static_cast<DICUSTOMFORCE*>(effectConfig.lpvTypeSpecificParams);
-				if (!cf) {
-					LogMessage("UpdateFFBEffect: Invalid custom force parameters");
-					return E_POINTER;
-				}
-				// Extract sample data from conditions
-				if (idx < cf->cSamples) {
-					cf->rglForceData[idx] = conditions[idx].lPositiveCoefficient;
-				}
-				// Get sample period from first condition
-				cf->dwSamplePeriod = conditions[0].lNegativeCoefficient;
-				break;
-			}
-			default: {
-				auto* cond = static_cast<DICONDITION*>(effectConfig.lpvTypeSpecificParams);
-				if (!cond) {
-					LogMessage("UpdateFFBEffect: Invalid condition parameters");
-					return E_POINTER;
-				}
-				cond[idx].lOffset = conditions[idx].lOffset;
-				cond[idx].lPositiveCoefficient = conditions[idx].lPositiveCoefficient;
-				cond[idx].lNegativeCoefficient = conditions[idx].lNegativeCoefficient;
-				cond[idx].dwPositiveSaturation = conditions[idx].dwPositiveSaturation;
-				cond[idx].dwNegativeSaturation = conditions[idx].dwNegativeSaturation;
-				cond[idx].lDeadBand = conditions[idx].lDeadBand;
-				break;
-			}
-			}
+		auto* pe = static_cast<DIPERIODIC*>(effectConfig.lpvTypeSpecificParams);
+		if (!pe) {
+			LogMessage("UpdatePeriodicForce: Invalid periodic parameters");
+			return E_POINTER;
 		}
 
-		// Update the effect parameters
+		int clampedOffset = (offset > 10000) ? 10000 : (offset < -10000) ? -10000 : offset;
+		// Fix: dwMagnitude is DWORD (unsigned) and should be 0-10000, not -10000 to 10000
+		DWORD clampedMagnitude = (magnitude < 0) ? 0 : (magnitude > 10000) ? 10000 : magnitude;
+
+		pe->dwMagnitude = clampedMagnitude;  // Now correctly assigns unsigned value
+		pe->lOffset = clampedOffset;
+		pe->dwPeriod = period;
+
 		HRESULT hr = _DeviceFFBEffectControl[GUIDString][effectType]->SetParameters(
 			&effectConfig, DIEP_TYPESPECIFICPARAMS
 		);
 
 		if (FAILED(hr)) {
-			LogMessage("UpdateFFBEffect: Failed to update effect parameters: 0x%08X", hr);
+			LogMessage("UpdatePeriodicForce: Failed to update effect parameters: 0x%08X", hr);
 			return hr;
 		}
 
-		LogMessage("UpdateFFBEffect: Effect updated successfully");
+		LogMessage("UpdatePeriodicForce: Magnitude=%d, Offset=%d, Period=%d", clampedMagnitude, clampedOffset, period);
 		return S_OK;
 	}
 	catch (const std::exception& e) {
-		LogMessage("UpdateFFBEffect: Exception: %s", e.what());
+		LogMessage("UpdatePeriodicForce: Exception: %s", e.what());
 		return E_FAIL;
 	}
 	catch (...) {
-		LogMessage("UpdateFFBEffect: Unknown exception");
+		LogMessage("UpdatePeriodicForce: Unknown exception");
 		return E_FAIL;
 	}
 }
+
+extern "C" DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateRampForce(LPCSTR guidInstance, int startMagnitude, int endMagnitude)
+{
+	try {
+		if (!guidInstance) {
+			LogMessage("UpdateRampForce: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("UpdateRampForce: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("UpdateRampForce: Device not found");
+			return E_FAIL;
+		}
+
+		if (!_DeviceFFBEffectControl[GUIDString].contains(Effects::Type::RampForce)) {
+			LogMessage("UpdateRampForce: RampForce effect not found");
+			return E_ABORT;
+		}
+
+		auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][Effects::Type::RampForce];
+		auto* rf = static_cast<DIRAMPFORCE*>(effectConfig.lpvTypeSpecificParams);
+		if (!rf) {
+			LogMessage("UpdateRampForce: Invalid ramp force parameters");
+			return E_POINTER;
+		}
+
+		int clampedStart = (startMagnitude > 10000) ? 10000 : (startMagnitude < -10000) ? -10000 : startMagnitude;
+		int clampedEnd = (endMagnitude > 10000) ? 10000 : (endMagnitude < -10000) ? -10000 : endMagnitude;
+
+		rf->lStart = clampedStart;
+		rf->lEnd = clampedEnd;
+
+		HRESULT hr = _DeviceFFBEffectControl[GUIDString][Effects::Type::RampForce]->SetParameters(
+			&effectConfig, DIEP_TYPESPECIFICPARAMS
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("UpdateRampForce: Failed to update effect parameters: 0x%08X", hr);
+			return hr;
+		}
+
+		LogMessage("UpdateRampForce: Start=%d, End=%d", clampedStart, clampedEnd);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("UpdateRampForce: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("UpdateRampForce: Unknown exception");
+		return E_FAIL;
+	}
+}
+
+extern "C" DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateConditionForce(LPCSTR guidInstance, Effects::Type effectType,
+	int offset, int positiveCoefficient, int negativeCoefficient,
+	DWORD positiveSaturation, DWORD negativeSaturation, int deadBand)
+{
+	try {
+		if (!guidInstance) {
+			LogMessage("UpdateConditionForce: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("UpdateConditionForce: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
+		if (effectType != Effects::Type::Spring &&
+			effectType != Effects::Type::Damper &&
+			effectType != Effects::Type::Inertia &&
+			effectType != Effects::Type::Friction) {
+			LogMessage("UpdateConditionForce: Not a condition effect type");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("UpdateConditionForce: Device not found");
+			return E_FAIL;
+		}
+
+		if (!_DeviceFFBEffectControl[GUIDString].contains(effectType)) {
+			LogMessage("UpdateConditionForce: Effect not found");
+			return E_ABORT;
+		}
+
+		auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][effectType];
+		auto* cond = static_cast<DICONDITION*>(effectConfig.lpvTypeSpecificParams);
+		if (!cond) {
+			LogMessage("UpdateConditionForce: Invalid condition parameters");
+			return E_POINTER;
+		}
+
+		int clampedOffset = (offset > 10000) ? 10000 : (offset < -10000) ? -10000 : offset;
+		int clampedPosCoef = (positiveCoefficient > 10000) ? 10000 : (positiveCoefficient < -10000) ? -10000 : positiveCoefficient;
+		int clampedNegCoef = (negativeCoefficient > 10000) ? 10000 : (negativeCoefficient < -10000) ? -10000 : negativeCoefficient;
+		int clampedDeadBand = (deadBand > 10000) ? 10000 : (deadBand < 0) ? 0 : deadBand;
+		DWORD clampedPosSat = (positiveSaturation > 10000) ? 10000 : positiveSaturation;
+		DWORD clampedNegSat = (negativeSaturation > 10000) ? 10000 : negativeSaturation;
+
+		cond[0].lOffset = clampedOffset;
+		cond[0].lPositiveCoefficient = clampedPosCoef;
+		cond[0].lNegativeCoefficient = clampedNegCoef;
+		cond[0].dwPositiveSaturation = clampedPosSat;
+		cond[0].dwNegativeSaturation = clampedNegSat;
+		cond[0].lDeadBand = clampedDeadBand;
+
+		HRESULT hr = _DeviceFFBEffectControl[GUIDString][effectType]->SetParameters(
+			&effectConfig, DIEP_TYPESPECIFICPARAMS
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("UpdateConditionForce: Failed to update effect parameters: 0x%08X", hr);
+			return hr;
+		}
+
+		LogMessage("UpdateConditionForce: Effect updated with PosCoef=%d, NegCoef=%d", clampedPosCoef, clampedNegCoef);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("UpdateConditionForce: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("UpdateConditionForce: Unknown exception");
+		return E_FAIL;
+	}
+}
+
+extern "C" DIRECTINPUTFORCEFEEDBACK_API HRESULT UpdateCustomForce(LPCSTR guidInstance, int* forceData, int sampleCount, DWORD samplePeriod)
+{
+	try {
+		if (!guidInstance || !forceData || sampleCount <= 0) {
+			LogMessage("UpdateCustomForce: Invalid parameters");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("UpdateCustomForce: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
+			return E_INVALIDARG;
+		}
+
+		std::string GUIDString(guidInstance);
+		if (!_ActiveDevices.contains(GUIDString)) {
+			LogMessage("UpdateCustomForce: Device not found");
+			return E_FAIL;
+		}
+
+		if (!_DeviceFFBEffectControl[GUIDString].contains(Effects::Type::CustomForce)) {
+			LogMessage("UpdateCustomForce: CustomForce effect not found");
+			return E_ABORT;
+		}
+
+		auto& effectConfig = _DeviceFFBEffectConfig[GUIDString][Effects::Type::CustomForce];
+		auto* cf = static_cast<DICUSTOMFORCE*>(effectConfig.lpvTypeSpecificParams);
+		if (!cf) {
+			LogMessage("UpdateCustomForce: Invalid custom force parameters");
+			return E_POINTER;
+		}
+
+		if (cf->cSamples != sampleCount) {
+			if (cf->rglForceData) {
+				delete[] cf->rglForceData;
+			}
+			cf->rglForceData = new LONG[sampleCount];
+			cf->cSamples = sampleCount;
+			LogMessage("UpdateCustomForce: Resized force data array to %d samples", sampleCount);
+		}
+
+		for (int i = 0; i < sampleCount; i++) {
+			int clampedForce = (forceData[i] > 10000) ? 10000 : (forceData[i] < -10000) ? -10000 : forceData[i];
+			cf->rglForceData[i] = clampedForce;
+		}
+
+		cf->dwSamplePeriod = samplePeriod;
+
+		HRESULT hr = _DeviceFFBEffectControl[GUIDString][Effects::Type::CustomForce]->SetParameters(
+			&effectConfig, DIEP_TYPESPECIFICPARAMS
+		);
+
+		if (FAILED(hr)) {
+			LogMessage("UpdateCustomForce: Failed to update effect parameters: 0x%08X", hr);
+			return hr;
+		}
+
+		LogMessage("UpdateCustomForce: Updated with %d samples, period %d", sampleCount, samplePeriod);
+		return S_OK;
+	}
+	catch (const std::exception& e) {
+		LogMessage("UpdateCustomForce: Exception: %s", e.what());
+		return E_FAIL;
+	}
+	catch (...) {
+		LogMessage("UpdateCustomForce: Unknown exception");
+		return E_FAIL;
+	}
+}
+
 DIRECTINPUTFORCEFEEDBACK_API HRESULT StopAllFFBEffects(LPCSTR guidInstance) {
 	try {
 		if (!guidInstance) {
 			LogMessage("StopAllFFBEffects: Invalid GUID (null)");
+			return E_INVALIDARG;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			LogMessage("StopAllFFBEffects: Invalid GUID format: %s", guidInstance);
+			SetLastErrorMessage("Invalid GUID format");
 			return E_INVALIDARG;
 		}
 
@@ -1137,22 +1591,52 @@ DIRECTINPUTFORCEFEEDBACK_API bool IsDirectInputInitialized() {
 }
 
 DIRECTINPUTFORCEFEEDBACK_API HRESULT GetDILastError(char* buffer, int bufferSize) {
-	if (!buffer || bufferSize <= 0) {
+	if (!buffer) {
+		LogMessage("GetDILastError: Buffer pointer is null");
 		return E_INVALIDARG;
 	}
 
+	if (bufferSize <= 0) {
+		LogMessage("GetDILastError: Invalid buffer size (%d)", bufferSize);
+		return E_INVALIDARG;
+	}
+
+	// Zero out buffer first
+	memset(buffer, 0, bufferSize);
+
 	if (g_LastErrorMessage.empty()) {
-		strncpy_s(buffer, bufferSize, "No error", _TRUNCATE);
+		// Safely copy "No error" message with proper size checks
+		const char* defaultMsg = "No error";
+		size_t defaultLen = strlen(defaultMsg);
+
+		// Make sure we don't exceed buffer size including null terminator
+		if (defaultLen >= (size_t)bufferSize) {
+			strncpy_s(buffer, bufferSize, defaultMsg, bufferSize - 1);
+			buffer[bufferSize - 1] = '\0';
+		}
+		else {
+			strcpy_s(buffer, bufferSize, defaultMsg);
+		}
 	}
 	else {
-		strncpy_s(buffer, bufferSize, g_LastErrorMessage.c_str(), _TRUNCATE);
+		// Safely copy error message with proper size checks
+		size_t msgLen = g_LastErrorMessage.length();
+
+		if (msgLen >= (size_t)bufferSize) {
+			strncpy_s(buffer, bufferSize, g_LastErrorMessage.c_str(), bufferSize - 1);
+			buffer[bufferSize - 1] = '\0';
+			LogMessage("GetDILastError: Error message truncated (%zu bytes)", msgLen);
+		}
+		else {
+			strcpy_s(buffer, bufferSize, g_LastErrorMessage.c_str());
+		}
 	}
 
 	return S_OK;
 }
 
 // Generate SAFEARRAY of DEBUG data with comprehensive FFB information
-DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEARRAY** DebugData) {
+DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEARRAY * *DebugData) {
 	try {
 		HRESULT hr = E_FAIL;
 		std::vector<std::wstring> debugInfo;
@@ -1172,6 +1656,13 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEA
 
 		if (!guidInstance) {
 			debugInfo.push_back(L"ERROR: Invalid GUID (null)");
+			hr = BuildSafeArray(debugInfo, DebugData);
+			return hr;
+		}
+
+		// Validate GUID format
+		if (!IsValidGUIDString(guidInstance)) {
+			debugInfo.push_back(L"ERROR: Invalid GUID format");
 			hr = BuildSafeArray(debugInfo, DebugData);
 			return hr;
 		}
@@ -1372,35 +1863,66 @@ DIRECTINPUTFORCEFEEDBACK_API HRESULT DEBUG1(LPCSTR guidInstance, /*[out]*/ SAFEA
 // Callback Functions
 //////////////////////////////////////////////////////////////
 
-BOOL CALLBACK _EnumDevicesCallback(const DIDEVICEINSTANCE* DIDI, void* pContext) {
+BOOL CALLBACK _EnumDevicesCallback(const DIDEVICEINSTANCE * DIDI, void* pContext) {
 	try {
+		if (!DIDI) {
+			LogMessage("_EnumDevicesCallback: Invalid device instance (null)");
+			return DIENUM_STOP;
+		}
+
 		DeviceInfo di = { 0 };
 		di.deviceType = DIDI->dwDevType;
+
+		// Get strings with error checking
 		std::string GIStr = GUID_to_string(DIDI->guidInstance);
 		std::string GPStr = GUID_to_string(DIDI->guidProduct);
 		std::string INStr = wstring_to_string(DIDI->tszInstanceName);
 		std::string PNStr = wstring_to_string(DIDI->tszProductName);
 
-		di.guidInstance = new char[GIStr.length() + 1];
-		di.guidProduct = new char[GPStr.length() + 1];
-		di.instanceName = new char[INStr.length() + 1];
-		di.productName = new char[PNStr.length() + 1];
-		strcpy_s(di.guidInstance, GIStr.length() + 1, GIStr.c_str());
-		strcpy_s(di.guidProduct, GPStr.length() + 1, GPStr.c_str());
-		strcpy_s(di.instanceName, INStr.length() + 1, INStr.c_str());
-		strcpy_s(di.productName, PNStr.length() + 1, PNStr.c_str());
-		di.FFBCapable = false; // Default to false; will be updated later.
+		if (GIStr.empty() || GPStr.empty()) {
+			LogMessage("_EnumDevicesCallback: Invalid GUID strings");
+			return DIENUM_CONTINUE; // Skip this device
+		}
 
-		// Fanatec devices fix: skip duplicate HID if applicable.
+		// Allocate strings with error handling
+		di.guidInstance = SafeStrDup(GIStr.c_str());
+		di.guidProduct = SafeStrDup(GPStr.c_str());
+		di.instanceName = SafeStrDup(INStr.c_str());
+		di.productName = SafeStrDup(PNStr.c_str());
+
+		// Check all allocations succeeded
+		if (!di.guidInstance || !di.guidProduct ||
+			!di.instanceName || !di.productName) {
+			// Clean up partial allocations
+			SafeStrFree(di.guidInstance);
+			SafeStrFree(di.guidProduct);
+			SafeStrFree(di.instanceName);
+			SafeStrFree(di.productName);
+
+			LogMessage("_EnumDevicesCallback: Memory allocation failed");
+			return DIENUM_STOP;
+		}
+
+		di.FFBCapable = false;
+
+		// Skip Fanatec duplicates
 		if (LOWORD(DIDI->guidProduct.Data1) == 0x0EB7) {
 			if (IsDuplicateHID(DIDI)) {
-				LogMessage("_EnumDevicesCallback: Skipping duplicate Fanatec device: %s", INStr.c_str());
+				LogMessage("_EnumDevicesCallback: Skipping duplicate Fanatec device: %s",
+					di.instanceName);
+
+				// Free allocated memory
+				SafeStrFree(di.guidInstance);
+				SafeStrFree(di.guidProduct);
+				SafeStrFree(di.instanceName);
+				SafeStrFree(di.productName);
+
 				return DIENUM_CONTINUE;
 			}
 		}
 
 		_DeviceInstances.push_back(di);
-		LogMessage("_EnumDevicesCallback: Found device: %s", INStr.c_str());
+		LogMessage("_EnumDevicesCallback: Found device: %s", di.instanceName);
 		return DIENUM_CONTINUE;
 	}
 	catch (const std::exception& e) {
@@ -1413,7 +1935,7 @@ BOOL CALLBACK _EnumDevicesCallback(const DIDEVICEINSTANCE* DIDI, void* pContext)
 	}
 }
 
-BOOL CALLBACK _EnumDevicesCallbackFFB(const DIDEVICEINSTANCE* DIDI, void* pContext) {
+BOOL CALLBACK _EnumDevicesCallbackFFB(const DIDEVICEINSTANCE * DIDI, void* pContext) {
 	try {
 		std::string GUIDStr = GUID_to_string(DIDI->guidInstance);
 		for (auto& di : _DeviceInstances) {
@@ -1451,7 +1973,7 @@ BOOL CALLBACK _EnumFFBEffectsCallback(LPCDIEFFECTINFO EffectInfo, LPVOID pvRef) 
 	}
 }
 
-BOOL CALLBACK _EnumFFBAxisCallback(const DIDEVICEOBJECTINSTANCE* ObjectInst, LPVOID pvRef) {
+BOOL CALLBACK _EnumFFBAxisCallback(const DIDEVICEOBJECTINSTANCE * ObjectInst, LPVOID pvRef) {
 	try {
 		std::string GUIDString = *reinterpret_cast<std::string*>(pvRef);
 		if ((ObjectInst->dwFlags & DIDOI_FFACTUATOR) != 0) {
@@ -1494,7 +2016,7 @@ LRESULT _WindowsHookCallback(int code, WPARAM wParam, LPARAM lParam) {
 // Helper Functions
 //////////////////////////////////////////////////////////////
 
-HRESULT BuildSafeArray(std::vector<std::wstring> sourceData, SAFEARRAY** SafeArrayData) {
+HRESULT BuildSafeArray(std::vector<std::wstring> sourceData, SAFEARRAY * *SafeArrayData) {
 	HRESULT hr = E_FAIL;
 	try {
 		const LONG dataEntries = static_cast<LONG>(sourceData.size());
@@ -1523,64 +2045,118 @@ HRESULT BuildSafeArray(std::vector<std::wstring> sourceData, SAFEARRAY** SafeArr
 	}
 }
 
-std::wstring string_to_wstring(const std::string& str) {
+std::wstring string_to_wstring(const std::string & str) {
 	if (str.empty()) return std::wstring();
-	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
+
+	// Use proper conversion flags for error detection
+	DWORD flags = MB_ERR_INVALID_CHARS;
+
+	int size_needed = MultiByteToWideChar(CP_UTF8, flags, str.c_str(), (int)str.size(), NULL, 0);
+	if (size_needed <= 0) {
+		DWORD error = GetLastError();
+		LogMessage("string_to_wstring: Conversion failed (error: %d)", error);
+		return std::wstring();
+	}
+
 	std::wstring wstrTo(size_needed, 0);
-	MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstrTo[0], size_needed);
+	int result = MultiByteToWideChar(CP_UTF8, flags, str.c_str(), (int)str.size(),
+		&wstrTo[0], size_needed);
+	if (result == 0) {
+		DWORD error = GetLastError();
+		LogMessage("string_to_wstring: Conversion failed (error: %d)", error);
+		return std::wstring();
+	}
+
 	return wstrTo;
 }
 
-std::string wstring_to_string(const std::wstring& wstr) {
+std::string wstring_to_string(const std::wstring & wstr) {
 	if (wstr.empty()) return std::string();
-	int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
+
+	// Use proper flags for error detection
+	DWORD flags = WC_ERR_INVALID_CHARS;
+
+	int size_needed = WideCharToMultiByte(CP_UTF8, flags, wstr.c_str(), (int)wstr.size(),
+		NULL, 0, NULL, NULL);
+	if (size_needed <= 0) {
+		DWORD error = GetLastError();
+		LogMessage("wstring_to_string: Conversion failed (error: %d)", error);
+		return std::string();
+	}
+
 	std::string strTo(size_needed, 0);
-	WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+	int result = WideCharToMultiByte(CP_UTF8, flags, wstr.c_str(), (int)wstr.size(),
+		&strTo[0], size_needed, NULL, NULL);
+	if (result == 0) {
+		DWORD error = GetLastError();
+		LogMessage("wstring_to_string: Conversion failed (error: %d)", error);
+		return std::string();
+	}
+
 	return strTo;
 }
 
 std::string GUID_to_string(GUID guidInstance) {
-	OLECHAR* guidSTR;
-	HRESULT hr = StringFromCLSID(guidInstance, &guidSTR);
-	if (FAILED(hr)) {
-		LogMessage("GUID_to_string: StringFromCLSID failed: 0x%08X", hr);
+	// Use proper GUID-to-string conversion with error checking
+	OLECHAR guidStr[64] = { 0 }; // Plenty of space for a GUID
+	HRESULT hr = StringFromGUID2(guidInstance, guidStr, 64);
+
+	if (hr == 0) {
+		LogMessage("GUID_to_string: StringFromGUID2 failed");
 		return "";
 	}
 
-	std::string s = wstring_to_string(guidSTR);
-	CoTaskMemFree(guidSTR); // Free memory allocated by StringFromCLSID
-	return s;
+	// Convert wide string to UTF-8
+	std::string result = wstring_to_string(guidStr);
+	if (result.empty() && guidInstance != GUID_NULL) {
+		LogMessage("GUID_to_string: Conversion to UTF-8 failed");
+	}
+
+	return result;
 }
 
 GUID LPCSTRGUIDtoGUID(LPCSTR guidInstance) {
 	GUID deviceGuid = GUID_NULL;
+
 	if (!guidInstance) {
 		LogMessage("LPCSTRGUIDtoGUID: Invalid GUID string (null)");
 		return deviceGuid;
 	}
 
-	int wcharCount = MultiByteToWideChar(CP_UTF8, 0, guidInstance, -1, NULL, 0);
+	// Validate GUID format
+	if (!IsValidGUIDString(guidInstance)) {
+		LogMessage("LPCSTRGUIDtoGUID: Invalid GUID format: %s", guidInstance);
+		return deviceGuid;
+	}
+
+	// Convert to wide string more safely
+	int wcharCount = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		guidInstance, -1, NULL, 0);
 	if (wcharCount <= 0) {
-		LogMessage("LPCSTRGUIDtoGUID: MultiByteToWideChar failed to get size");
+		DWORD error = GetLastError();
+		LogMessage("LPCSTRGUIDtoGUID: MultiByteToWideChar failed (error: %d)", error);
 		return deviceGuid;
 	}
 
-	WCHAR* wstrGuidInstance = new WCHAR[wcharCount];
-	if (!wstrGuidInstance) {
-		LogMessage("LPCSTRGUIDtoGUID: Memory allocation failed");
+	// Using vector for automatic cleanup and exception safety
+	std::vector<wchar_t> wideGuid(wcharCount);
+	int result = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		guidInstance, -1, wideGuid.data(), wcharCount);
+	if (result == 0) {
+		DWORD error = GetLastError();
+		LogMessage("LPCSTRGUIDtoGUID: MultiByteToWideChar conversion failed (error: %d)", error);
 		return deviceGuid;
 	}
 
-	MultiByteToWideChar(CP_UTF8, 0, guidInstance, -1, wstrGuidInstance, wcharCount);
-	HRESULT hr = CLSIDFromString(wstrGuidInstance, &deviceGuid);
-	delete[] wstrGuidInstance;
-
+	// Convert string to GUID
+	HRESULT hr = CLSIDFromString(wideGuid.data(), &deviceGuid);
 	if (FAILED(hr)) {
 		LogMessage("LPCSTRGUIDtoGUID: CLSIDFromString failed: 0x%08X", hr);
 	}
 
 	return deviceGuid;
 }
+
 FlatJoyState2 FlattenDIJOYSTATE2(DIJOYSTATE2 DeviceState) {
 	FlatJoyState2 state = {};
 
@@ -1685,7 +2261,7 @@ GUID Device2GUID(LPDIRECTINPUTDEVICE8 Device) {
 	return deviceInfo.guidInstance;
 }
 
-inline CComBSTR ToBstr(const std::wstring& s) {
+inline CComBSTR ToBstr(const std::wstring & s) {
 	if (s.empty()) {
 		return CComBSTR();
 	}
@@ -1763,7 +2339,7 @@ GUID EffectTypeToGUID(Effects::Type effectType) {
 	}
 }
 
-bool IsDuplicateHID(const DIDEVICEINSTANCE* DIDI) {
+bool IsDuplicateHID(const DIDEVICEINSTANCE * DIDI) {
 	if (!DIDI) {
 		LogMessage("IsDuplicateHID: Invalid device instance (null)");
 		return true;

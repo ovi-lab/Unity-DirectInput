@@ -21,6 +21,9 @@ namespace DirectInputManager
 #else
         const string DLLFile = @"..\..\..\..\..\Plugin\DLL\DirectInputForceFeedback.dll";
 #endif
+        [DllImport(DLLFile, CharSet = CharSet.Ansi, EntryPoint = "UpdateConstantForce")]
+        internal static extern int UpdateConstantForceSimple([MarshalAs(UnmanagedType.LPStr)] string guidInstance, int magnitude);
+
         [DllImport(DLLFile)]
         internal static extern void InitializeForStandalone();
 
@@ -64,7 +67,22 @@ namespace DirectInputManager
         internal static extern int DestroyFFBEffect([MarshalAs(UnmanagedType.LPStr)] string guidInstance, FFBEffects effectType);
 
         [DllImport(DLLFile, CharSet = CharSet.Ansi)]
-        internal static extern int UpdateFFBEffect([MarshalAs(UnmanagedType.LPStr)] string guidInstance, FFBEffects effectType, [In] DICondition[] conditions);
+        internal static extern int UpdateConstantForce([MarshalAs(UnmanagedType.LPStr)] string guidInstance, int magnitude);
+
+        [DllImport(DLLFile, CharSet = CharSet.Ansi)]
+        internal static extern int UpdatePeriodicForce([MarshalAs(UnmanagedType.LPStr)] string guidInstance, FFBEffects effectType, int magnitude, uint period, int offset);
+
+        [DllImport(DLLFile, CharSet = CharSet.Ansi)]
+        internal static extern int UpdateRampForce([MarshalAs(UnmanagedType.LPStr)] string guidInstance, int startMagnitude, int endMagnitude);
+
+        [DllImport(DLLFile, CharSet = CharSet.Ansi)]
+        internal static extern int UpdateConditionForce([MarshalAs(UnmanagedType.LPStr)] string guidInstance, FFBEffects effectType,
+            int offset, int positiveCoefficient, int negativeCoefficient,
+            uint positiveSaturation, uint negativeSaturation, int deadBand);
+
+        [DllImport(DLLFile, CharSet = CharSet.Ansi)]
+        internal static extern int UpdateCustomForce([MarshalAs(UnmanagedType.LPStr)] string guidInstance,
+            [In] int[] forceData, int sampleCount, uint samplePeriod);
 
         [DllImport(DLLFile, CharSet = CharSet.Ansi)]
         internal static extern int StopAllFFBEffects([MarshalAs(UnmanagedType.LPStr)] string guidInstance);
@@ -597,11 +615,17 @@ namespace DirectInputManager
         /// <returns>
         /// A boolean representing the if the Effect updated successfully
         /// </returns>
-        public static bool UpdateEffect(string guidInstance, FFBEffects fFBEffects, DICondition[] conditions)
+        public static bool UpdateEffect(string guidInstance, FFBEffects effectType, DICondition[] conditions)
         {
+            if (conditions == null || conditions.Length == 0)
+            {
+                DebugLog("UpdateEffect: Invalid conditions array");
+                return false;
+            }
+
+            // Apply clamping to all values
             for (int i = 0; i < conditions.Length; i++)
             {
-                // Apply clamping directly to existing values
                 conditions[i].deadband = ClampAgnostic(conditions[i].deadband, 0, 10000);
                 conditions[i].offset = ClampAgnostic(conditions[i].offset, -10000, 10000);
                 conditions[i].negativeCoefficient = ClampAgnostic(conditions[i].negativeCoefficient, -10000, 10000);
@@ -610,15 +634,67 @@ namespace DirectInputManager
                 conditions[i].positiveSaturation = ClampAgnostic(conditions[i].positiveSaturation, 0, 10000);
             }
 
-            int hresult = Native.UpdateFFBEffect(guidInstance, fFBEffects, conditions);
-            if (hresult != 0)
+            // Use the appropriate native function based on effect type
+            bool success = false;
+            switch (effectType)
             {
-                DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
-                return false;
-            }
-            return true;
-        }
+                case FFBEffects.ConstantForce:
+                    success = UpdateConstantForceNative(guidInstance, conditions[0].positiveCoefficient);
+                    break;
 
+                case FFBEffects.Spring:
+                case FFBEffects.Damper:
+                case FFBEffects.Friction:
+                case FFBEffects.Inertia:
+                    success = UpdateConditionForceNative(guidInstance, effectType,
+                        conditions[0].offset,
+                        conditions[0].positiveCoefficient,
+                        conditions[0].negativeCoefficient,
+                        (uint)conditions[0].positiveSaturation,
+                        (uint)conditions[0].negativeSaturation,
+                        conditions[0].deadband);
+                    break;
+
+                case FFBEffects.RampForce:
+                    success = UpdateRampForceNative(guidInstance,
+                        conditions[0].positiveCoefficient,
+                        conditions[0].negativeCoefficient);
+                    break;
+
+                case FFBEffects.Sine:
+                case FFBEffects.Square:
+                case FFBEffects.Triangle:
+                case FFBEffects.SawtoothUp:
+                case FFBEffects.SawtoothDown:
+                    success = UpdatePeriodicForceNative(guidInstance, effectType,
+                        conditions[0].positiveCoefficient,
+                        (uint)conditions[0].positiveSaturation,
+                        conditions[0].offset);
+                    break;
+
+                case FFBEffects.CustomForce:
+                    // For custom force, we extract the data from conditions array
+                    int[] forceData = new int[conditions.Length];
+                    for (int i = 0; i < conditions.Length; i++)
+                    {
+                        forceData[i] = conditions[i].positiveCoefficient;
+                    }
+                    uint samplePeriod = (uint)conditions[0].negativeCoefficient;
+                    success = UpdateCustomForceNative(guidInstance, forceData, samplePeriod);
+                    break;
+
+                default:
+                    DebugLog($"UpdateEffect: Unsupported effect type {effectType}");
+                    return false;
+            }
+
+            if (!success)
+            {
+                DebugLog($"UpdateEffect: Failed to update {effectType}");
+            }
+
+            return success;
+        }
 
         /// <summary>
         /// Magnitude: Strength of Force [-10,000 - 10,0000]
@@ -626,25 +702,9 @@ namespace DirectInputManager
         /// <returns>
         /// A boolean representing the if the Effect updated successfully
         /// </returns>
-        public static bool UpdateConstantForceSimple(string guidInstance, int Magnitude)
+        public static bool UpdateConstantForceSimple(string guidInstance, int magnitude)
         {
-            DICondition[] conditions = new DICondition[1];
-            for (int i = 0; i < conditions.Length; i++)
-            {
-                conditions[i] = new DICondition
-                {
-                    deadband = 0,
-                    offset = 0,
-                    negativeCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    positiveCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    negativeSaturation = 0,
-                    positiveSaturation = 0
-                };
-            }
-
-            int hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.ConstantForce, conditions);
-            if (hresult != 0) { DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}"); return false; }
-            return true;
+            return UpdateConstantForceNative(guidInstance, magnitude);
         }
 
         /// <summary>
@@ -660,23 +720,9 @@ namespace DirectInputManager
         /// </returns>
         public static bool UpdateSpringSimple(string guidInstance, uint deadband, int offset, int negativeCoefficient, int positiveCoefficient, uint negativeSaturation, uint positiveSaturation)
         {
-            DICondition[] conditions = new DICondition[1];
-            for (int i = 0; i < conditions.Length; i++)
-            {
-                conditions[i] = new DICondition
-                {
-                    deadband = ClampAgnostic(deadband, 0, 10000),
-                    offset = ClampAgnostic(offset, -10000, 10000),
-                    negativeCoefficient = ClampAgnostic(negativeCoefficient, -10000, 10000),
-                    positiveCoefficient = ClampAgnostic(positiveCoefficient, -10000, 10000),
-                    negativeSaturation = ClampAgnostic(negativeSaturation, 0, 10000),
-                    positiveSaturation = ClampAgnostic(positiveSaturation, 0, 10000)
-                };
-            }
-
-            int hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.Spring, conditions);
-            if (hresult != 0) { DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}"); return false; }
-            return true;
+            return UpdateConditionForceNative(guidInstance, FFBEffects.Spring,
+                offset, positiveCoefficient, negativeCoefficient,
+                positiveSaturation, negativeSaturation, (int)deadband);
         }
 
         /// <summary>
@@ -685,53 +731,10 @@ namespace DirectInputManager
         /// <returns>
         /// A boolean representing the if the Effect updated successfully
         /// </returns>
-        public static bool UpdateDamperSimple(string guidInstance, int Magnitude)
+        public static bool UpdateDamperSimple(string guidInstance, int magnitude)
         {
-            DICondition[] conditions = new DICondition[1];
-            for (int i = 0; i < conditions.Length; i++)
-            {
-                conditions[i] = new DICondition
-                {
-                    deadband = 0,
-                    offset = 0,
-                    negativeCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    positiveCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    negativeSaturation = 0,
-                    positiveSaturation = 0
-                };
-            }
-
-            int hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.Damper, conditions);
-            if (hresult != 0) { DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}"); return false; }
-            return true;
-        }
-
-
-        /// <summary>
-        /// Magnitude: Strength of Force [-10,000 - 10,0000]
-        /// </summary>
-        /// <returns>
-        /// A boolean representing the if the Effect updated successfully
-        /// </returns>
-        public static bool UpdateFrictionSimple(string guidInstance, int Magnitude)
-        {
-            DICondition[] conditions = new DICondition[1];
-            for (int i = 0; i < conditions.Length; i++)
-            {
-                conditions[i] = new DICondition
-                {
-                    deadband = 0,
-                    offset = 0,
-                    negativeCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    positiveCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    negativeSaturation = 0,
-                    positiveSaturation = 0
-                };
-            }
-
-            int hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.Friction, conditions);
-            if (hresult != 0) { DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}"); return false; }
-            return true;
+            return UpdateConditionForceNative(guidInstance, FFBEffects.Damper,
+                0, magnitude, magnitude, 0, 0, 0);
         }
 
         /// <summary>
@@ -740,140 +743,93 @@ namespace DirectInputManager
         /// <returns>
         /// A boolean representing the if the Effect updated successfully
         /// </returns>
-        public static bool UpdateInertiaSimple(string guidInstance, int Magnitude)
+        public static bool UpdateFrictionSimple(string guidInstance, int magnitude)
         {
-            DICondition[] conditions = new DICondition[1];
-            for (int i = 0; i < conditions.Length; i++)
-            {
-                conditions[i] = new DICondition
-                {
-                    deadband = 0,
-                    offset = 0,
-                    negativeCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    positiveCoefficient = ClampAgnostic(Magnitude, -10000, 10000),
-                    negativeSaturation = 0,
-                    positiveSaturation = 0
-                };
-            }
+            return UpdateConditionForceNative(guidInstance, FFBEffects.Friction,
+                0, magnitude, magnitude, 0, 0, 0);
+        }
 
-            int hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.Inertia, conditions);
-            if (hresult != 0) { DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}"); return false; }
-            return true;
+        /// <summary>
+        /// Magnitude: Strength of Force [-10,000 - 10,0000]
+        /// </summary>
+        /// <returns>
+        /// A boolean representing the if the Effect updated successfully
+        /// </returns>
+        public static bool UpdateInertiaSimple(string guidInstance, int magnitude)
+        {
+            return UpdateConditionForceNative(guidInstance, FFBEffects.Inertia,
+                0, magnitude, magnitude, 0, 0, 0);
         }
 
         public static bool UpdatePeriodicSimple(string guidInstance, FFBEffects effectType, int magnitude, uint period = 30000, int rampStart = 0, int rampEnd = 0)
         {
-            DICondition[] conditions = new DICondition[1];
-            conditions[0] = new DICondition
+            // For RampForce effect, use UpdateRampForceNative
+            if (effectType == FFBEffects.RampForce)
             {
-                deadband = 0,
-                offset = 0
-            };
-            if (effectType != FFBEffects.RampForce)
-            {
-                conditions[0].negativeCoefficient = ClampAgnostic(magnitude, -10000, 10000);
-                conditions[0].positiveCoefficient = ClampAgnostic(magnitude, -10000, 10000);
-
-                conditions[0].positiveSaturation = period;
-            }
-            else
-            {
-                conditions[0].positiveCoefficient = ClampAgnostic(rampStart, -10000, 10000);
-                conditions[0].negativeCoefficient = ClampAgnostic(rampEnd, -10000, 10000);
-
-                conditions[0].positiveSaturation = 0;
-            }
-            conditions[0].negativeSaturation = 0;
-
-            // Try updating first
-            int hresult = Native.UpdateFFBEffect(guidInstance, effectType, conditions);
-            if (hresult != 0)
-            {
-                // If effect doesn't exist (0x80004004 is HRESULT for E_ABORT)
-                if (hresult == unchecked((int)0x80004004))
+                bool success = UpdateRampForceNative(guidInstance, rampStart, rampEnd);
+                if (!success)
                 {
-                    hresult = Native.CreateFFBEffect(guidInstance, effectType);
+                    // If update failed, try creating the effect first
+                    int hresult = Native.CreateFFBEffect(guidInstance, effectType);
                     if (hresult != 0)
                     {
                         DebugLog($"CreateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
                         return false;
                     }
-                    // Try updating again after creation
-                    hresult = Native.UpdateFFBEffect(guidInstance, effectType, conditions);
+
+                    // Try updating again
+                    success = UpdateRampForceNative(guidInstance, rampStart, rampEnd);
+                }
+                return success;
+            }
+            // For other periodic effects, use UpdatePeriodicForceNative
+            else
+            {
+                bool success = UpdatePeriodicForceNative(guidInstance, effectType, magnitude, period, 0);
+                if (!success)
+                {
+                    // If update failed, try creating the effect first
+                    int hresult = Native.CreateFFBEffect(guidInstance, effectType);
                     if (hresult != 0)
                     {
-                        DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
+                        DebugLog($"CreateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
                         return false;
                     }
+
+                    // Try updating again
+                    success = UpdatePeriodicForceNative(guidInstance, effectType, magnitude, period, 0);
                 }
-                else
-                {
-                    DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
-                    return false;
-                }
+                return success;
             }
-            return true;
         }
 
         public static bool UpdateCustomForceSimple(string guidInstance, int[] forceData, uint samplePeriod, int offset = 0, uint deadband = 0)
         {
             if (forceData == null)
             {
-                System.Diagnostics.Debug.WriteLine("UpdateCustomForceSimple: Invalid input parameters");
+                DebugLog("UpdateCustomForceSimple: Invalid input parameters");
                 return false;
             }
 
-            // Create conditions array matching the number of force samples
-            DICondition[] conditions = new DICondition[forceData.Length];
-
-            // Set up conditions for each force sample
-            for (int i = 0; i < forceData.Length; i++)
+            bool success = UpdateCustomForceNative(guidInstance, forceData, samplePeriod);
+            if (!success)
             {
-                conditions[i] = new DICondition
+                // If update failed, try creating the effect first
+                int hresult = Native.CreateFFBEffect(guidInstance, FFBEffects.CustomForce);
+                if (hresult != 0)
                 {
-                    positiveCoefficient = forceData[i],   // Force value for this sample
-                    negativeCoefficient = i == 0 ? (int)samplePeriod : 0, // Sample period in first condition only
-                    offset = offset,
-                    deadband = deadband,
-                    positiveSaturation = 10000,           // Full range
-                    negativeSaturation = 10000            // Full range
-                };
-            }
-
-            // Try updating first
-            int hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.CustomForce, conditions);
-            if (hresult != 0)
-            {
-                // If effect doesn't exist (0x80004004 is HRESULT for E_ABORT)
-                if (hresult == unchecked((int)0x80004004))
-                {
-                    hresult = Native.CreateFFBEffect(guidInstance, FFBEffects.CustomForce);
-                    if (hresult != 0)
-                    {
-                        DebugLog($"CreateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
-                        return false;
-                    }
-                    // Try updating again after creation
-                    hresult = Native.UpdateFFBEffect(guidInstance, FFBEffects.CustomForce, conditions);
-                    if (hresult != 0)
-                    {
-                        DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
-                        return false;
-                    }
-                }
-                else
-                {
-                    DebugLog($"UpdateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
+                    DebugLog($"CreateFFBEffect Failed: 0x{hresult:x} {WinErrors.GetSystemMessage(hresult)}");
                     return false;
                 }
+
+                // Try updating again
+                success = UpdateCustomForceNative(guidInstance, forceData, samplePeriod);
             }
-            return true;
+            return success;
         }
 
-
-
         //////////////////////////////////////////////////////////////
-        // Overloads - Unfortunately summaries don't propagate to overloads
+        // Overloads                                                //
         //////////////////////////////////////////////////////////////
 
         /// <summary>
@@ -1060,6 +1016,84 @@ namespace DirectInputManager
 
         public static bool UpdateCustomForceEffect(DeviceInfo device, int[] forceData, uint samplePeriod) => UpdateCustomForceSimple(device.guidInstance, forceData, samplePeriod);
 
+        /// <summary>
+        /// Updates the constant force effect.
+        /// </summary>
+        /// <param name="guidInstance">Device identifier</param>
+        /// <param name="magnitude">Force [-10000, 10000]</param>
+        /// <returns>True if the update was successful</returns>
+        public static bool UpdateConstantForceNative(string guidInstance, int magnitude)
+        {
+            int result = Native.UpdateConstantForce(guidInstance, magnitude);
+            return result == 0;
+        }
+
+        /// <summary>
+        /// Updates a periodic effect (Sine, Square, Triangle, etc.).
+        /// </summary>
+        /// <param name="guidInstance">Device identifier</param>
+        /// <param name="effectType">Type of periodic effect</param>
+        /// <param name="magnitude">Effect amplitude [0, 10000] - note: unsigned, use offset for direction</param>
+        /// <param name="period">Period in microseconds</param>
+        /// <param name="offset">Effect offset [-10000, 10000]</param>
+        /// <returns>True if the update was successful</returns>
+        public static bool UpdatePeriodicForceNative(string guidInstance, FFBEffects effectType, int magnitude, uint period = 30000, int offset = 0)
+        {
+            int positiveMagnitude = Math.Abs(magnitude);
+            if (positiveMagnitude > 10000) positiveMagnitude = 10000;
+
+            int result = Native.UpdatePeriodicForce(guidInstance, effectType, positiveMagnitude, period, offset);
+            return result == 0;
+        }
+
+        /// <summary>
+        /// Updates a ramp force effect.
+        /// </summary>
+        /// <param name="guidInstance">Device identifier</param>
+        /// <param name="startMagnitude">Starting force [-10000, 10000]</param>
+        /// <param name="endMagnitude">Ending force [-10000, 10000]</param>
+        /// <returns>True if the update was successful</returns>
+        public static bool UpdateRampForceNative(string guidInstance, int startMagnitude, int endMagnitude)
+        {
+            int result = Native.UpdateRampForce(guidInstance, startMagnitude, endMagnitude);
+            return result == 0;
+        }
+
+        /// <summary>
+        /// Updates a condition effect (Spring, Damper, Friction, Inertia).
+        /// </summary>
+        /// <param name="guidInstance">Device identifier</param>
+        /// <param name="effectType">Type of condition effect</param>
+        /// <param name="offset">Center offset [-10000, 10000]</param>
+        /// <param name="positiveCoefficient">Positive side coefficient [-10000, 10000]</param>
+        /// <param name="negativeCoefficient">Negative side coefficient [-10000, 10000]</param>
+        /// <param name="positiveSaturation">Positive side saturation [0, 10000]</param>
+        /// <param name="negativeSaturation">Negative side saturation [0, 10000]</param>
+        /// <param name="deadBand">Dead zone [0, 10000]</param>
+        /// <returns>True if the update was successful</returns>
+        public static bool UpdateConditionForceNative(string guidInstance, FFBEffects effectType,
+            int offset = 0, int positiveCoefficient = 10000, int negativeCoefficient = 10000,
+            uint positiveSaturation = 10000, uint negativeSaturation = 10000, int deadBand = 0)
+        {
+            int result = Native.UpdateConditionForce(guidInstance, effectType,
+                offset, positiveCoefficient, negativeCoefficient,
+                positiveSaturation, negativeSaturation, deadBand);
+            return result == 0;
+        }
+
+        /// <summary>
+        /// Updates a custom force effect.
+        /// </summary>
+        /// <param name="guidInstance">Device identifier</param>
+        /// <param name="forceData">Array of force values [-10000, 10000]</param>
+        /// <param name="samplePeriod">Sample period in microseconds</param>
+        /// <returns>True if the update was successful</returns>
+        public static bool UpdateCustomForceNative(string guidInstance, int[] forceData, uint samplePeriod)
+        {
+            int result = Native.UpdateCustomForce(guidInstance, forceData, forceData.Length, samplePeriod);
+            return result == 0;
+        }
+
     } // End of DIManager
 
 
@@ -1187,5 +1221,276 @@ namespace DirectInputManager
                 if (!token.IsCancellationRequested) { token.Cancel(); }
             }
         }
+    }
+
+    /// <summary>
+    /// Enum of possible FFB Effects<br/>
+    /// </summary>
+    public enum FFBEffects
+    {
+        ConstantForce = 0,
+        RampForce = 1,
+        Square = 2,
+        Sine = 3,
+        Triangle = 4,
+        SawtoothUp = 5,
+        SawtoothDown = 6,
+        Spring = 7,
+        Damper = 8,
+        Inertia = 9,
+        Friction = 10,
+        CustomForce = 11
+    }
+
+    public struct CustomForceData
+    {
+        public int[] ForceData;      // Array of force values
+        public uint SamplePeriod;    // Time in microseconds between samples
+        public uint Channels;        // Number of channels (typically 1)
+    }
+
+    /// <summary>
+    /// Types of OnDeviceChange DBTEvents<br/>
+    /// More info: https://docs.microsoft.com/en-us/windows/win32/devio/wm-devicechange
+    /// </summary>
+    public enum DBTEvents
+    {
+        DBT_DEVNODES_CHANGED = 0x0007,
+        DBT_QUERYCHANGECONFIG = 0x0017,
+        DBT_CONFIGCHANGED = 0x0018,
+        DBT_CONFIGCHANGECANCELED = 0x0019,
+        DBT_DEVICEARRIVAL = 0x8000,
+        DBT_DEVICEQUERYREMOVE = 0x8001,
+        DBT_DEVICEQUERYREMOVEFAILED = 0x8002,
+        DBT_DEVICEREMOVEPENDING = 0x8003,
+        DBT_DEVICEREMOVECOMPLETE = 0x8004,
+        DBT_DEVICETYPESPECIFIC = 0x8005,
+        DBT_CUSTOMEVENT = 0x8006,
+        DBT_USERDEFINED = 0xFFFF
+    }
+
+    /// <summary>
+    /// Struct to hold device specific info<br/>
+    /// </summary>
+    [Serializable]
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DeviceInfo
+    {
+        public uint deviceType;
+        [MarshalAs(UnmanagedType.LPStr)] public string guidInstance;
+        [MarshalAs(UnmanagedType.LPStr)] public string guidProduct;
+        [MarshalAs(UnmanagedType.LPStr)] public string instanceName;
+        [MarshalAs(UnmanagedType.LPStr)] public string productName;
+        public bool FFBCapable;
+    }
+
+    public delegate void deviceInfoEvent(DeviceInfo device); // delegate for handling events that pass DeviceInfo
+    public delegate void deviceStateEvent(DeviceInfo device, FlatJoyState2 state); // delegate for handling events that pass DeviceInfo & FlatJoyState2
+    /// <summary>
+    /// Like DeviceInfo but allows for events per device<br/>
+    /// </summary>
+    public class ActiveDeviceInfo
+    {
+        public DeviceInfo deviceInfo;                     // Hold the info about the device
+        public Int32 stateHash;                           // Hold the hash of the last known state
+        public event deviceInfoEvent OnDeviceRemoved;     // Event to add listners too
+        public event deviceStateEvent OnDeviceStateChange; // Event to add listners too
+        public void DeviceRemoved(DeviceInfo device) { OnDeviceRemoved?.Invoke(device); }         // Function to invoke event listeners
+        public void DeviceStateChange(DeviceInfo device, FlatJoyState2 state) { OnDeviceStateChange?.Invoke(device, state); } // Function to invoke event listeners
+    }
+
+    /// <summary>
+    /// DirectInput DIConditon Struct <br/>
+    /// Offset: -10,000 - 10,000 <br/>
+    /// positiveCoefficient: -10,000 - 10,000 <br/>
+    /// negativeCoefficient: -10,000 - 10,000 <br/>
+    /// positiveSaturation: 0 - 10,000 <br/>
+    /// negativeSaturation: 0 - 10,000 <br/>
+    /// deadband: 0 - 10,000 <br/>
+    /// More info: https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416601(v=vs.85)
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DICondition
+    {
+        /// <summary>
+        /// Offset for the condition, in the range from - 10,000 through 10,000.
+        /// </summary>
+        public int offset;
+        /// <summary>
+        /// Coefficient constant on the positive side of the offset, in the range 
+        /// from - 10,000 through 10,000.
+        /// </summary>
+        public int positiveCoefficient;
+        /// <summary>
+        /// Coefficient constant on the negative side of the offset, in the range 
+        /// from - 10,000 through 10,000. If the device does not support separate
+        /// positive and negative coefficients, the value of lNegativeCoefficient 
+        /// is ignored, and the value of lPositiveCoefficient is used as both the 
+        /// positive and negative coefficients.
+        /// </summary>
+        public int negativeCoefficient;
+        /// <summary>
+        /// Maximum force output on the positive side of the offset, in the range
+        /// from 0 through 10,000.
+        /// 
+        /// If the device does not support force saturation, the value of this
+        /// member is ignored.
+        /// </summary>
+        public uint positiveSaturation;
+        /// <summary>
+        /// Maximum force output on the negative side of the offset, in the range
+        /// from 0 through 10,000.
+        ///
+        /// If the device does not support force saturation, the value of this member
+        /// is ignored.
+        /// 
+        /// If the device does not support separate positive and negative saturation,
+        /// the value of dwNegativeSaturation is ignored, and the value of dwPositiveSaturation
+        /// is used as both the positive and negative saturation.
+        /// </summary>
+        public uint negativeSaturation;
+        /// <summary>
+        /// Range about the center of the axis that is ignored by the effect. 
+        /// This value is in the range from 0 through 10,000.
+        /// </summary>
+        public int deadband;  // Changed from uint to int to match native LONG type
+    }
+
+    /// <summary>
+    /// Describes the state of a joystick device with extended capabilities. <br/>
+    /// See https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416628(v=vs.85)
+    /// </summary>
+    [Serializable]
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DIJOYSTATE2
+    {
+        public int lX;
+        public int lY;
+        public int lZ;
+        public int lRx;
+        public int lRy;
+        public int lRz;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+        public int[] rglSlider;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+        public int[] rgdwPOV;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 128)]
+        public byte[] rgbButtons;
+        public int lVX;
+        public int lVY;
+        public int lVZ;
+        public int lVRx;
+        public int lVRy;
+        public int lVRz;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+        public int[] rglVSlider;
+        public int lAX;
+        public int lAY;
+        public int lAZ;
+        public int lARx;
+        public int lARy;
+        public int lARz;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+        public int[] rglASlider;
+        public int lFX;
+        public int lFY;
+        public int lFZ;
+        public int lFRx;
+        public int lFRy;
+        public int lFRz;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+        public int[] rglFSlider;
+    }
+
+    /// <summary>
+    /// A flattend version of DIJOYSTATE2 without nested arrays<br/>
+    /// See https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416628(v=vs.85)
+    /// </summary>
+    [Serializable]
+    public struct FlatJoyState2
+    { // Axis trimmed from "LONG" UInt32 to UInt16 as values range 0-65535?
+        public UInt64 buttonsA; // Buttons seperated into banks of 64-Bits to fit into Unsigned 64-bit integer
+        public UInt64 buttonsB; // Buttons seperated into banks of 64-Bits to fit into Unsigned 64-bit integer
+        public UInt16 lX;       // X-axis
+        public UInt16 lY;       // Y-axis
+        public UInt16 lZ;       // Z-axis
+        public UInt16 lU;       // U-axis
+        public UInt16 lV;       // V-axis
+        public UInt16 lRx;      // X-axis rotation
+        public UInt16 lRy;      // Y-axis rotation
+        public UInt16 lRz;      // Z-axis rotation
+        public UInt16 lVX;      // X-axis velocity
+        public UInt16 lVY;      // Y-axis velocity
+        public UInt16 lVZ;      // Z-axis velocity
+        public UInt16 lVU;      // U-axis velocity
+        public UInt16 lVV;      // V-axis velocity
+        public UInt16 lVRx;     // X-axis angular velocity
+        public UInt16 lVRy;     // Y-axis angular velocity
+        public UInt16 lVRz;     // Z-axis angular velocity
+        public UInt16 lAX;      // X-axis acceleration
+        public UInt16 lAY;      // Y-axis acceleration
+        public UInt16 lAZ;      // Z-axis acceleration
+        public UInt16 lAU;      // U-axis acceleration
+        public UInt16 lAV;      // V-axis acceleration
+        public UInt16 lARx;     // X-axis angular acceleration
+        public UInt16 lARy;     // Y-axis angular acceleration
+        public UInt16 lARz;     // Z-axis angular acceleration
+        public UInt16 lFX;      // X-axis force
+        public UInt16 lFY;      // Y-axis force
+        public UInt16 lFZ;      // Z-axis force
+        public UInt16 lFU;      // U-axis force
+        public UInt16 lFV;      // V-axis force
+        public UInt16 lFRx;     // X-axis torque
+        public UInt16 lFRy;     // Y-axis torque
+        public UInt16 lFRz;     // Z-axis torque
+        public UInt16 rgdwPOV;  // Store each DPAD in chunks of 4 bits inside 16-bit UInt
+        public override readonly int GetHashCode()
+        {
+            return BitConverter.ToInt32(DIManager.FlatStateMD5(this), 0);
+        }
+    }
+
+    /// <summary>
+    /// Describes a DirectInput device's capabilities. <br/>
+    /// More info: https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416607(v=vs.85)
+    /// </summary>
+    [Serializable]
+    public struct DIDEVCAPS
+    {
+        public UInt32 dwSize;                // Size of this structure, in bytes.
+        public DwFlags dwFlags;               // Flags associated with the device.
+        public UInt32 dwDevType;             // Device type specifier. The least-significant byte of the device type description code specifies the device type. The next-significant byte specifies the device subtype. This value can also be combined with DIDEVTYPE_HID, which specifies a Human Interface Device (human interface device).
+        public UInt32 dwAxes;                // Number of axes available on the device.
+        public UInt32 dwButtons;             // Number of buttons available on the device.
+        public UInt32 dwPOVs;                // Number of point-of-view controllers available on the device.
+        public UInt32 dwFFSamplePeriod;      // Minimum time between playback of consecutive raw force commands, in microseconds.
+        public UInt32 dwFFMinTimeResolution; // Minimum time, in microseconds, that the device can resolve. The device rounds any times to the nearest supported increment. For example, if the value of dwFFMinTimeResolution is 1000, the device would round any times to the nearest millisecond.
+        public UInt32 dwFirmwareRevision;    // Firmware revision of the device.
+        public UInt32 dwHardwareRevision;    // Hardware revision of the device.
+        public UInt32 dwFFDriverVersion;     // Version number of the device driver.
+    }
+
+    /// <summary>
+    /// Describes the Flags associated with a DirectInput device's capabilities. <br/>
+    /// More info: https://docs.microsoft.com/en-us/previous-versions/windows/desktop/ee416607(v=vs.85)#:~:text=IDirectInputDevice8%3A%3AGetCapabilities%20method.-,dwFlags,-Flags%20associated%20with
+    /// </summary>
+    [Flags]
+    public enum DwFlags
+    {
+        DIDC_ALIAS = 0x00010000, // The device is a duplicate of another DirectInput device.
+        DIDC_ATTACHED = 0x00000001, // The device is physically attached to the user's computer.
+        DIDC_DEADBAND = 0x00004000, // The device supports deadband for at least one force-feedback condition.
+        DIDC_EMULATED = 0x00000004, // If this flag is set, the data is coming from a user mode device interface, such as a Human Interface Device (human interface device), or by some other ring 3 means. If it is not set, the data is coming directly from a kernel mode driver.
+        DIDC_FORCEFEEDBACK = 0x00000100, // The device supports force feedback.
+        DIDC_FFFADE = 0x00000400, // The force-feedback system supports the fade parameter for at least one effect.
+        DIDC_FFATTACK = 0x00000200, // The force-feedback system supports the attack parameter for at least one effect.
+        DIDC_HIDDEN = 0x00040000, // Fictitious device created by a device driver so that it can generate keyboard and mouse events.
+        DIDC_PHANTOM = 0x00020000, // Placeholder. Phantom devices are by default not enumerated.
+        DIDC_POLLEDDATAFORMAT = 0x00000008, // At least one object in the current data format is polled, rather than interrupt-driven.
+        DIDC_POLLEDDEVICE = 0x00000002, // At least one object on the device is polled, rather than interrupt-driven. HID devices can contain a mixture of polled and nonpolled objects.
+        DIDC_POSNEGCOEFFICIENTS = 0x00001000, // The force-feedback system supports two coefficient values for conditions (one for the positive displacement of the axis and one for the negative displacement of the axis) for at least one condition. If the device does not support both coefficients, the negative coefficient in the DICONDITION structure is ignored.
+        DIDC_POSNEGSATURATION = 0x00002000, // The force-feedback system supports a maximum saturation for both positive and negative force output for at least one condition. If the device does not support both saturation values, the negative saturation in the DICONDITION structure is ignored.
+        DIDC_SATURATION = 0x00000800, // The force-feedback system supports the saturation of condition effects for at least one condition. If the device does not support saturation, the force generated by a condition is limited only by the maximum force that the device can generate.
+        DIDC_STARTDELAY = 0x00008000, // The force-feedback system supports the start delay parameter for at least one effect. If the device does not support start delays, the dwStartDelay member of the DIEFFECT structure is ignored.
     }
 }
