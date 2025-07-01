@@ -7,7 +7,10 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
+using UnityEditor.PackageManager;
+using UnityEngine;
 #if UNITY_STANDALONE_WIN
 using UnityEngine;
 #endif
@@ -19,7 +22,7 @@ namespace DirectInputManager
 #if UNITY_STANDALONE_WIN
         const string DLLFile = @"DirectInputForceFeedback.dll";
 #else
-        const string DLLFile = @"..\..\..\..\..\Plugins\DLL\DirectInputForceFeedback.dll";
+        private const string DLLFile = "DirectInputForceFeedback";
 #endif
         [DllImport(DLLFile, CharSet = CharSet.Ansi, EntryPoint = "UpdateConstantForce")]
         internal static extern int UpdateConstantForceSimple([MarshalAs(UnmanagedType.LPStr)] string guidInstance, int magnitude);
@@ -128,8 +131,9 @@ namespace DirectInputManager
         //////////////////////////////////////////////////////////////
         // Cross Platform "Macros" - Allows lib to work in Visual Studio & Unity
         //////////////////////////////////////////////////////////////
-
-#if UNITY_STANDALONE_WIN
+//Need this to work when target build is set to android, adding Android temporarily
+//TODO: FIX Unity_Android
+#if UNITY_STANDALONE_WIN || UNITY_ANDROID
         private static uint ClampAgnostic(uint value, uint min, uint max) => (uint)Mathf.Clamp(value, min, max);
         private static int ClampAgnostic(int value, int min, int max) => Mathf.Clamp(value, min, max);
 
