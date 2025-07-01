@@ -1,11 +1,10 @@
 {
     "name": "mrtimcakes.directinput.Editor",
-    "rootNamespace": "DirectInputManager",
+    "rootNamespace": "DirectInputManager.Editor",
     "references": [],
     "includePlatforms": [],
     "excludePlatforms": [
         "Android",
-        "Editor",
         "EmbeddedLinux",
         "iOS",
         "LinuxStandalone64",
