@@ -8,7 +8,8 @@
   "documentationUrl": "https://example.com/",
   "changelogUrl": "https://example.com/changelog.html",
   "licensesUrl": "https://github.com/MrTimcakes/Unity-DirectInput/blob/main/LICENSE",
-  "dependencies": {
+  "dependencies": 
+  {
     "com.unity.inputsystem": "1.0.2"
   },
  "keywords": [
@@ -35,6 +36,13 @@
     "name": "MrTimcakes, ImDanOush",
     "email": "MrTimcakes@MrTimcakes.com",
     "url": "https://www.MrTimcakes.com"
-  }
+  },
+  "samples": [
+    {
+      "displayName": "Sample Scene",
+      "description": "Sample Scene",
+      "path": "Samples~/"
+    }
+  ]
 }
 
