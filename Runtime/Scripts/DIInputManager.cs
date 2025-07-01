@@ -62,7 +62,7 @@ Example: 'fanatec' for Fanatec devices";
         {
             if (_instance == null)
             {
-                _instance = FindObjectOfType<DIInputManager>();
+                _instance = FindAnyObjectByType<DIInputManager>();
 
                 if (_instance == null)
                 {
