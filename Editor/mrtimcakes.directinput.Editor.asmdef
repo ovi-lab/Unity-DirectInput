@@ -1,7 +1,10 @@
 {
     "name": "mrtimcakes.directinput.Editor",
     "rootNamespace": "DirectInputManager.Editor",
-    "references": [],
+    "references": [
+        "GUID:e21905af95dfdae408572857b49f0ef9",
+        "GUID:75469ad4d38634e559750d17036d5f7c"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [
         "Android",
