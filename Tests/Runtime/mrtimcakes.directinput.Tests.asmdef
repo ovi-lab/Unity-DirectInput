@@ -1,11 +1,10 @@
 {
     "name": "mrtimcakes.directinput.Tests",
-    "rootNamespace": "DirectInputManager",
+    "rootNamespace": "DirectInputManager.Tests",
     "references": [],
     "includePlatforms": [],
     "excludePlatforms": [
         "Android",
-        "Editor",
         "EmbeddedLinux",
         "iOS",
         "LinuxStandalone64",
@@ -28,9 +27,7 @@
     ],
     "allowUnsafeCode": false,
     "overrideReferences": true,
-    "precompiledReferences": [
-        ""
-    ],
+    "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],
