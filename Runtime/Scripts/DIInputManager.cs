@@ -119,6 +119,9 @@ public class DIInputManager : Singleton<DIInputManager>
     private bool forgetIt = false;
     #endregion
 
+    private Dictionary<string, InputControl> controlLookup = new();
+
+
     private void OnEnable()
     {
         SceneManager.activeSceneChanged += OnActiveSceneChanged;
@@ -260,7 +263,7 @@ public class DIInputManager : Singleton<DIInputManager>
 
             if (inputMappings != null)
             {
-                _inputMappingCache = new Dictionary<string, int>();
+                _inputMappingCache = new();
 
                 for (int i = 0; i < inputMappings.Length; i++)
                 {
@@ -720,10 +723,23 @@ public class DIInputManager : Singleton<DIInputManager>
     public float GetFFBDeviceAxisValue(string axisName)
     {
         if (ffbDevice == null || !ffbDevice.added) return 0f;
-
+        if (controlLookup.Count == 0 || controlLookup == null)
+        {
+            controlLookup = ffbDevice.allControls.ToDictionary(c => c.name);
+            // Dictionary<string, InputControl> dictionary = new Dictionary<string, InputControl>();
+            // foreach (InputControl control in ffbDevice.allControls)
+            // {
+            //     if(!dictionary.TryAdd(control.name, control))
+            //     {
+            //         Debug.LogWarning($"===={control.name} : {control}");
+            //     }
+            // }
+            // controlLookup = dictionary;
+        }
         try
         {
-            var control = ffbDevice.allControls.FirstOrDefault(c => c.name == axisName);
+            var control = controlLookup[axisName];
+            // var control = ffbDevice.allControls.FirstOrDefault(c => c.name == axisName);
             if (control != null)
             {
                 if (control is AxisControl axisControl)
